@@ -16,9 +16,12 @@ class ModelInfo:
     has_lora: bool = False
     lora_base_model: str | None = None
     has_gguf: bool = False
+    is_ollama: bool = False
 
     @property
     def label(self) -> str:
+        if self.is_ollama:
+            return f"{self.name} [bold blue]\\[Ollama][/]"
         if self.has_lora and self.lora_base_model:
             base_short = self.lora_base_model.split("/")[-1]
             return f"{base_short} + [bold magenta]{self.name}[/] [magenta]\\[LoRA][/]"
@@ -85,3 +88,30 @@ def _try_add_model(path: Path, models: list[ModelInfo]):
 
     info.has_gguf = any(path.glob("*.gguf"))
     models.append(info)
+
+
+def discover_ollama_models(
+    base_url: str = "http://localhost:11434",
+) -> list[ModelInfo]:
+    """Query a running Ollama server for available models."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/tags") as resp:
+            data = json.loads(resp.read())
+    except OSError:
+        return []
+
+    models: list[ModelInfo] = []
+    for entry in data.get("models", []):
+        name = entry.get("name", "")
+        details = entry.get("details", {})
+        models.append(
+            ModelInfo(
+                name=name,
+                path=Path(base_url),  # placeholder — Ollama manages files
+                model_type=details.get("family", ""),
+                is_ollama=True,
+            )
+        )
+    return models

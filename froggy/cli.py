@@ -10,7 +10,7 @@ from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
 from .backends import pick_backend
-from .discovery import ModelInfo, discover_models
+from .discovery import ModelInfo, discover_models, discover_ollama_models
 from .session import ChatSession, handle_command
 
 console = Console()
@@ -73,9 +73,17 @@ def main(models_dir: Path | None, device: str):
     console.print(Panel(BANNER, border_style="green", padding=(0, 2)))
 
     models = discover_models(models_dir)
+
+    # Also discover Ollama models if server is running
+    ollama_models = discover_ollama_models()
+    if ollama_models:
+        console.print(f"[dim]Found {len(ollama_models)} model(s) on Ollama server[/]")
+        models.extend(ollama_models)
+
     if not models:
         console.print(f"[red]No models found in {models_dir}[/]")
-        console.print("[dim]Models need a config.json and weight files in their directory.[/]")
+        console.print("[dim]Models need a config.json and weight files in their directory,[/]")
+        console.print("[dim]or start an Ollama server (ollama serve).[/]")
         sys.exit(1)
 
     while True:

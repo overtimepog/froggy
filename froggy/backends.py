@@ -1,9 +1,11 @@
 """Backend interface and implementations for model inference."""
 
+import json
 import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Iterator
@@ -343,14 +345,86 @@ class LlamaCppBackend(Backend):
         self._gguf_path = None
 
 
+class OllamaBackend(Backend):
+    """Communicates with a running Ollama server via its REST API."""
+
+    def __init__(self, base_url: str = "http://localhost:11434"):
+        self.base_url = base_url
+        self._model_name: str | None = None
+
+    @property
+    def name(self) -> str:
+        return "ollama"
+
+    def load(self, model_info: ModelInfo, device: str) -> None:
+        console.print(f"  [dim]Server:[/] {self.base_url}")
+
+        # Verify server is reachable and model exists
+        with urllib.request.urlopen(f"{self.base_url}/api/tags") as resp:
+            data = json.loads(resp.read())
+
+        available = [m["name"] for m in data.get("models", [])]
+        if model_info.name not in available:
+            raise ValueError(
+                f"Model '{model_info.name}' not found on Ollama server. "
+                f"Available: {', '.join(available)}"
+            )
+
+        self._model_name = model_info.name
+        console.print(f"  [dim]Model:[/] {self._model_name}")
+        console.print("  [bold green]\u2714 Ready![/]")
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        if self._model_name is None:
+            raise RuntimeError("Backend not loaded — call load() first")
+
+        body = json.dumps({
+            "model": self._model_name,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(req) as resp:
+            for line in resp:
+                if not line.strip():
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("done"):
+                    break
+                content = chunk.get("message", {}).get("content", "")
+                if content:
+                    yield content
+
+    def unload(self) -> None:
+        self._model_name = None
+
+
 BACKENDS: dict[str, type[Backend]] = {
     "transformers": TransformersBackend,
     "llama.cpp": LlamaCppBackend,
+    "ollama": OllamaBackend,
 }
 
 
 def pick_backend(model_info: ModelInfo) -> Backend:
     """Auto-select the best backend for a given model."""
+    if model_info.is_ollama:
+        return OllamaBackend()
     if model_info.has_gguf:
         return LlamaCppBackend()
     return TransformersBackend()
