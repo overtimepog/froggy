@@ -1,0 +1,25 @@
+[project]
+name = "froggy"
+version = "0.0.1"
+description = "Chat with your local models"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "torch",
+    "transformers",
+    "accelerate",
+    "peft",
+    "huggingface-hub",
+]
+
+[project.scripts]
+froggy = "froggy.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"

@@ -1,0 +1,14 @@
+# Core
+click>=8.0
+rich>=13.0
+
+# GPU / Model inference
+torch
+transformers
+accelerate
+peft
+huggingface-hub
+
+# Fast kernels (flash-linear-attention + causal-conv1d)
+flash-linear-attention
+causal-conv1d
