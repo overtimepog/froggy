@@ -1,10 +1,11 @@
 """Tests for model discovery logic."""
 
 import json
-import pytest
 from pathlib import Path
 
-from froggy.discovery import discover_models, ModelInfo
+import pytest
+
+from froggy.discovery import ModelInfo, discover_models
 
 
 @pytest.fixture
