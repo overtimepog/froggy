@@ -25,6 +25,10 @@
 - Use merge commits (not squash or rebase)
 - Delete branch after merge
 
+### README
+- **Update README.md whenever a feature is added or changed** — keep the features list, supported backends table, project structure, and usage examples in sync with the code
+- Do this in the same PR as the feature, not as a follow-up
+
 ### Commits
 - Commit messages: imperative mood, first line summarizes the change
 - Body explains *why*, not just *what*

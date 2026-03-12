@@ -1,10 +1,11 @@
 # froggy
 
-A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters) and GGUF models, with more backends planned.
+A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters), GGUF models via llama.cpp, and Ollama.
 
 ## Features
 
 - **Auto-discovery** - Scans directories to find local models, LoRA adapters, and GGUF files
+- **Ollama integration** - Auto-detects models from a running Ollama server and merges them into the selection menu
 - **Streaming chat** - Real-time token streaming with rich markdown rendering
 - **LoRA support** - Automatically detects and applies LoRA adapters, downloading base models as needed
 - **GPU acceleration** - Auto-detects CUDA and selects optimal dtype (bfloat16/float32)
@@ -57,7 +58,23 @@ On launch, froggy scans for models and presents a selection menu. Pick a model a
 | Backend | Status | Formats |
 |---------|--------|---------|
 | HuggingFace Transformers | Working | SafeTensors, PyTorch bins, LoRA adapters |
-| llama.cpp | Planned | GGUF |
+| llama.cpp | Working | GGUF (requires `llama-cli` on PATH) |
+| Ollama | Working | Any model available on your Ollama server |
+
+### Ollama Setup
+
+If you have [Ollama](https://ollama.com) running, froggy will automatically discover its models:
+
+```bash
+# Start Ollama (if not already running)
+ollama serve
+
+# Pull a model
+ollama pull llama3
+
+# Launch froggy — Ollama models appear automatically
+froggy
+```
 
 ## Project Structure
 
@@ -66,13 +83,14 @@ froggy/
   __init__.py       # Package init
   __main__.py       # Entry point (python -m froggy)
   cli.py            # CLI interface and model selection
-  backends.py       # Inference backends (Transformers, llama.cpp)
-  discovery.py      # Local model discovery and validation
+  backends.py       # Inference backends (Transformers, llama.cpp, Ollama)
+  discovery.py      # Local + Ollama model discovery and validation
   session.py        # Chat session and command handling
 tests/
   test_backends.py  # Backend selection and loading tests
   test_commands.py  # Chat command parsing tests
   test_discovery.py # Model discovery tests
+  test_ollama.py    # Ollama backend and discovery tests
 ```
 
 ## Requirements
