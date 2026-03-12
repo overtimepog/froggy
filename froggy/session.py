@@ -41,7 +41,7 @@ class ChatSession:
             padding=(0, 2),
         ))
         self.backend.load(self.model_info, self.device)
-        console.print(f"  [bold green]\u2714 Ready![/]")
+        console.print("  [bold green]\u2714 Ready![/]")
 
     def chat(self, user_input: str):
         self.messages.append({"role": "user", "content": user_input})

@@ -1,6 +1,5 @@
 """Backend interface and implementations for model inference."""
 
-import os
 import shutil
 import subprocess
 import threading
@@ -47,7 +46,7 @@ class TransformersBackend(Backend):
 
     def load(self, model_info: ModelInfo, device: str) -> None:
         import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
         def _auto_load(path, **kwargs):
             """Load model with the right auto class based on architecture."""
@@ -83,19 +82,19 @@ class TransformersBackend(Backend):
             self.model = _auto_load(str(model_info.path), **load_kwargs)
             console.print(f"  [green]\u2714[/] Model loaded [dim]({time.time() - t0:.1f}s)[/]")
 
-        console.print(f"  [cyan]\u27f3[/] Loading tokenizer...")
+        console.print("  [cyan]\u27f3[/] Loading tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             str(model_info.path), trust_remote_code=True
         )
-        console.print(f"  [green]\u2714[/] Tokenizer loaded")
+        console.print("  [green]\u2714[/] Tokenizer loaded")
 
         param_count = sum(p.numel() for p in self.model.parameters()) / 1e9
         console.print(f"  [dim]Parameters:[/] {param_count:.1f}B  [dim]Backend:[/] {self._dev_label}")
 
     def _load_lora(self, model_info: ModelInfo, load_kwargs: dict):
-        from peft import PeftModel
         from huggingface_hub import snapshot_download
-        from transformers import AutoModelForCausalLM, AutoConfig
+        from peft import PeftModel
+        from transformers import AutoConfig, AutoModelForCausalLM
 
         base_id = model_info.lora_base_model or str(model_info.path)
         base_dir = model_info.path / "base_model"
@@ -110,14 +109,14 @@ class TransformersBackend(Backend):
             if has_config and has_weights:
                 console.print(f"  [green]\u2714[/] Base model found locally: [dim]{base_dir}[/]")
             else:
-                console.print(f"  [yellow]\u26a0[/] Incomplete base model detected, cleaning up...")
+                console.print("  [yellow]\u26a0[/] Incomplete base model detected, cleaning up...")
                 shutil.rmtree(base_dir)
                 console.print(f"  [green]\u2714[/] Cleaned [dim]{base_dir}[/]")
 
         if not base_dir.exists():
             console.print(f"  [yellow]\u2193[/] Downloading base model: [bold]{base_id}[/]")
             console.print(f"    [dim]Saving to: {base_dir}[/]")
-            console.print(f"    [dim]This is a one-time download. Progress bars below:[/]")
+            console.print("    [dim]This is a one-time download. Progress bars below:[/]")
             t0 = time.time()
             snapshot_download(
                 repo_id=base_id,
@@ -126,7 +125,7 @@ class TransformersBackend(Backend):
             )
             console.print(f"  [green]\u2714[/] Base model downloaded [dim]({time.time() - t0:.1f}s)[/]")
 
-        console.print(f"  [cyan]\u27f3[/] Loading base model into memory...")
+        console.print("  [cyan]\u27f3[/] Loading base model into memory...")
         t0 = time.time()
 
         # Auto-detect architecture (multimodal vs causal)
@@ -272,7 +271,7 @@ class LlamaCppBackend(Backend):
 
         self._gpu = device != "cpu"
         if self._gpu:
-            console.print(f"  [dim]GPU offload:[/] enabled (all layers)")
+            console.print("  [dim]GPU offload:[/] enabled (all layers)")
 
         # Validate the executable works
         try:
@@ -286,7 +285,7 @@ class LlamaCppBackend(Backend):
         except (subprocess.TimeoutExpired, OSError):
             pass  # --version may not be supported on older builds
 
-        console.print(f"  [bold green]\u2714 Ready![/]")
+        console.print("  [bold green]\u2714 Ready![/]")
 
     def generate_stream(
         self,

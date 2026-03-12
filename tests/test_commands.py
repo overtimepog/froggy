@@ -1,8 +1,9 @@
 """Tests for slash command handling."""
 
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from froggy.discovery import ModelInfo
 from froggy.session import ChatSession, handle_command

@@ -1,17 +1,18 @@
 """Tests for backend selection and interface."""
 
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from froggy.discovery import ModelInfo
+import pytest
+
 from froggy.backends import (
-    pick_backend,
-    TransformersBackend,
     LlamaCppBackend,
+    TransformersBackend,
     _find_llama_cli,
     _format_chat_prompt,
+    pick_backend,
 )
+from froggy.discovery import ModelInfo
 
 
 class TestPickBackend:

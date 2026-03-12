@@ -6,7 +6,7 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt, IntPrompt
+from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
 from .backends import pick_backend
@@ -92,7 +92,7 @@ def main(models_dir: Path | None, device: str):
             console.print(f"[red]Failed to load model:[/] {e}")
             continue
 
-        console.print(f"\n[dim]Type [cyan]/help[/dim][cyan][/] for commands, [cyan]/quit[/] to exit.[/]\n")
+        console.print("\n[dim]Type [cyan]/help[/dim][cyan][/] for commands, [cyan]/quit[/] to exit.[/]\n")
 
         try:
             while True:
