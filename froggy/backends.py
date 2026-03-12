@@ -1,9 +1,12 @@
 """Backend interface and implementations for model inference."""
 
+import os
 import shutil
+import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Iterator
 
 from rich.console import Console
@@ -199,21 +202,146 @@ class TransformersBackend(Backend):
                 pass
 
 
+def _find_llama_cli() -> str | None:
+    """Search for a llama.cpp CLI executable on the system PATH."""
+    candidates = ["llama-cli", "llama-cli.exe", "main", "main.exe"]
+    for name in candidates:
+        found = shutil.which(name)
+        if found:
+            return found
+    # Check common install locations on Windows
+    for extra_dir in [
+        Path.home() / "llama.cpp" / "build" / "bin" / "Release",
+        Path.home() / "llama.cpp" / "build" / "bin",
+        Path.home() / "llama.cpp",
+    ]:
+        for name in candidates:
+            exe = extra_dir / name
+            if exe.is_file():
+                return str(exe)
+    return None
+
+
+def _format_chat_prompt(messages: list[dict]) -> str:
+    """Convert chat messages to a ChatML-style prompt string for llama-cli."""
+    parts = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>")
+    parts.append("<|im_start|>assistant\n")
+    return "\n".join(parts)
+
+
 class LlamaCppBackend(Backend):
-    """Future: wraps llama-cli.exe via subprocess."""
+    """Runs GGUF models via llama-cli subprocess."""
+
+    def __init__(self):
+        self._exe: str | None = None
+        self._gguf_path: Path | None = None
+        self._process: subprocess.Popen | None = None
+        self._gpu: bool = False
 
     @property
     def name(self) -> str:
         return "llama.cpp"
 
     def load(self, model_info: ModelInfo, device: str) -> None:
-        raise NotImplementedError("llama.cpp backend not yet implemented — needs GGUF files")
+        exe = _find_llama_cli()
+        if exe is None:
+            raise FileNotFoundError(
+                "Could not find llama-cli on PATH. "
+                "Install llama.cpp and ensure llama-cli is on your PATH.\n"
+                "  → https://github.com/ggerganov/llama.cpp"
+            )
+        self._exe = exe
+        console.print(f"  [dim]Executable:[/] {exe}")
 
-    def generate_stream(self, messages, temperature, max_tokens) -> Iterator[str]:
-        raise NotImplementedError
+        # Find the GGUF file in the model directory
+        gguf_files = sorted(model_info.path.glob("*.gguf"))
+        if not gguf_files:
+            raise FileNotFoundError(f"No .gguf files found in {model_info.path}")
+        self._gguf_path = gguf_files[0]
+        if len(gguf_files) > 1:
+            console.print(f"  [dim]Multiple GGUF files found, using:[/] {self._gguf_path.name}")
+        else:
+            console.print(f"  [dim]Model file:[/] {self._gguf_path.name}")
+
+        size_gb = self._gguf_path.stat().st_size / 1024**3
+        console.print(f"  [dim]Size:[/] {size_gb:.1f} GB")
+
+        self._gpu = device != "cpu"
+        if self._gpu:
+            console.print(f"  [dim]GPU offload:[/] enabled (all layers)")
+
+        # Validate the executable works
+        try:
+            result = subprocess.run(
+                [self._exe, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            version_info = (result.stdout or result.stderr).strip().split("\n")[0]
+            if version_info:
+                console.print(f"  [dim]Version:[/] {version_info}")
+        except (subprocess.TimeoutExpired, OSError):
+            pass  # --version may not be supported on older builds
+
+        console.print(f"  [bold green]\u2714 Ready![/]")
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        if self._exe is None or self._gguf_path is None:
+            raise RuntimeError("Backend not loaded — call load() first")
+
+        prompt = _format_chat_prompt(messages)
+
+        cmd = [
+            self._exe,
+            "-m", str(self._gguf_path),
+            "-p", prompt,
+            "-n", str(max_tokens),
+            "--temp", str(temperature),
+            "--no-display-prompt",
+            "-s", str(int(time.time())),  # random seed from timestamp
+        ]
+        if self._gpu:
+            cmd.extend(["-ngl", "999"])
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        try:
+            assert self._process.stdout is not None
+            while True:
+                char = self._process.stdout.read(1)
+                if not char:
+                    break
+                yield char
+        finally:
+            self._process.wait()
+            self._process = None
 
     def unload(self) -> None:
-        pass
+        if self._process is not None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+            self._process = None
+        self._exe = None
+        self._gguf_path = None
 
 
 BACKENDS: dict[str, type[Backend]] = {
