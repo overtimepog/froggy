@@ -6,7 +6,7 @@ A terminal-based chat tool for running local AI models. Supports HuggingFace Tra
 
 - **Auto-discovery** - Scans directories to find local models, LoRA adapters, and GGUF files
 - **Ollama integration** - Auto-detects models from a running Ollama server and merges them into the selection menu
-- **Streaming chat** - Real-time token streaming with rich markdown rendering
+- **Streaming chat** - Real-time token streaming with rich markdown rendering, automatic thinking-block filtering, and end-of-turn detection
 - **LoRA support** - Automatically detects and applies LoRA adapters, downloading base models as needed
 - **GPU acceleration** - Auto-detects CUDA and selects optimal dtype (bfloat16/float32)
 - **In-session controls** - Switch models, adjust temperature, set system prompts, and more without restarting
@@ -91,6 +91,7 @@ tests/
   test_commands.py  # Chat command parsing tests
   test_discovery.py # Model discovery tests
   test_ollama.py    # Ollama backend and discovery tests
+  test_streaming.py # Thinking filter and stop-string tests
 ```
 
 ## Requirements

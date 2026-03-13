@@ -1,5 +1,7 @@
 """Chat session and slash command handling."""
 
+import re
+
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -9,6 +11,23 @@ from rich.text import Text
 
 from .backends import Backend
 from .discovery import ModelInfo
+
+# Tokens that signal the model's turn is over (safety net for when EOS
+# token IDs alone don't catch it)
+_STOP_STRINGS = ["<|im_end|>", "<|im_start|>", "<|endoftext|>",
+                 "<|eot_id|>", "<end_of_turn>"]
+
+# Regex to strip <think>...</think> reasoning blocks (including partial ones)
+_THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>.*", re.DOTALL)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove <think>...</think> blocks from model output."""
+    text = _THINK_RE.sub("", text)
+    # Remove unclosed <think> block at the end (still being generated)
+    text = _THINK_OPEN_RE.sub("", text)
+    return text
 
 console = Console()
 
@@ -49,6 +68,7 @@ class ChatSession:
         full_messages = [{"role": "system", "content": self.system_prompt}] + self.messages
 
         full_response = []
+        stopped = False
         console.print()
 
         with Live(Text("\u258d", style="bold cyan"), console=console, refresh_per_second=15) as live:
@@ -56,13 +76,29 @@ class ChatSession:
                 full_messages, self.temperature, self.max_tokens
             ):
                 full_response.append(chunk)
-                text = "".join(full_response)
-                try:
-                    live.update(Markdown(text + " \u258d"))
-                except Exception:
-                    live.update(Text(text + " \u258d"))
+                raw = "".join(full_response)
 
-        response_text = "".join(full_response).strip()
+                # Safety-net: stop if the model emits a turn boundary token
+                # that wasn't caught by the EOS token ID list.
+                # Find the earliest stop marker to avoid order-dependent bugs.
+                stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+                if stop_positions:
+                    raw = raw[:min(stop_positions)]
+                    full_response = [raw]
+                    stopped = True
+
+                # Strip thinking blocks before display
+                display = strip_thinking(raw)
+
+                try:
+                    live.update(Markdown(display + " \u258d"))
+                except Exception:
+                    live.update(Text(display + " \u258d"))
+
+                if stopped:
+                    break
+
+        response_text = strip_thinking("".join(full_response)).strip()
         self.messages.append({"role": "assistant", "content": response_text})
 
     def clear(self):
