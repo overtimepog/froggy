@@ -47,7 +47,12 @@ class TransformersBackend(Backend):
         return "transformers"
 
     def load(self, model_info: ModelInfo, device: str) -> None:
+        import warnings
+
         import torch
+        # Suppress "fast path not available" warning from Qwen3.5 hybrid attention
+        # (causal-conv1d / flash-linear-attention don't build on Windows/Python 3.14)
+        warnings.filterwarnings("ignore", message=".*fast path is not available.*")
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
         def _auto_load(path, **kwargs):
@@ -170,11 +175,33 @@ class TransformersBackend(Backend):
             self.tokenizer, skip_prompt=True, skip_special_tokens=True
         )
 
+        # Build a comprehensive set of EOS token IDs so the model stops
+        # at end-of-turn instead of looping into simulated user/assistant turns
+        eos_ids = set()
+        if self.tokenizer.eos_token_id is not None:
+            eos_ids.add(self.tokenizer.eos_token_id)
+        # Add common end-of-turn tokens used by chat models
+        for tok_name in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>",
+                         "<end_of_turn>", "</s>"]:
+            tok_id = self.tokenizer.convert_tokens_to_ids(tok_name)
+            # convert_tokens_to_ids returns unk_token_id for unknown tokens
+            if tok_id is not None and tok_id != self.tokenizer.unk_token_id:
+                eos_ids.add(tok_id)
+        # Also check the model's generation_config if available
+        if hasattr(self.model, "generation_config"):
+            gc = self.model.generation_config
+            if gc.eos_token_id is not None:
+                if isinstance(gc.eos_token_id, int):
+                    eos_ids.add(gc.eos_token_id)
+                elif isinstance(gc.eos_token_id, list):
+                    eos_ids.update(gc.eos_token_id)
+
         gen_kwargs = dict(
             input_ids=input_ids,
             streamer=streamer,
             max_new_tokens=max_tokens,
             do_sample=temperature > 0,
+            eos_token_id=list(eos_ids) if eos_ids else None,
         )
         if temperature > 0:
             gen_kwargs["temperature"] = temperature
