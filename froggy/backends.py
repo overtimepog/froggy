@@ -372,6 +372,92 @@ class LlamaCppBackend(Backend):
         self._gguf_path = None
 
 
+def _is_apple_silicon() -> bool:
+    """Check if running on Apple Silicon (macOS ARM64)."""
+    import platform
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def _mlx_available() -> bool:
+    """Check if mlx-lm is installed and importable."""
+    try:
+        import mlx_lm  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+class MLXBackend(Backend):
+    """Runs models via Apple MLX on Apple Silicon Macs."""
+
+    def __init__(self):
+        self.model = None
+        self.tokenizer = None
+
+    @property
+    def name(self) -> str:
+        return "mlx"
+
+    def load(self, model_info: ModelInfo, device: str) -> None:
+        from mlx_lm import load as mlx_load
+
+        console.print(f"  [cyan]\u27f3[/] Loading model with MLX: [bold]{model_info.name}[/]")
+        console.print("  [dim]Device:[/] Apple Silicon (Metal)")
+
+        t0 = time.time()
+        self.model, self.tokenizer = mlx_load(str(model_info.path))
+        console.print(f"  [green]\u2714[/] Model loaded [dim]({time.time() - t0:.1f}s)[/]")
+        console.print("  [dim]Backend:[/] MLX")
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Backend not loaded — call load() first")
+
+        from mlx_lm import stream_generate
+        from mlx_lm.sample_utils import make_sampler
+
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            prompt = self.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=False
+            )
+        else:
+            # Fallback: simple concatenation
+            parts = []
+            for msg in messages:
+                parts.append(f"{msg['role']}: {msg['content']}")
+            parts.append("assistant:")
+            prompt = "\n".join(parts)
+
+        sampler = make_sampler(temp=temperature)
+
+        for response in stream_generate(
+            self.model,
+            self.tokenizer,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            sampler=sampler,
+        ):
+            if response.text:
+                yield response.text
+
+    def unload(self) -> None:
+        if self.model is not None:
+            del self.model
+            del self.tokenizer
+            self.model = None
+            self.tokenizer = None
+            try:
+                import mlx.core as mx
+                mx.metal.reset_peak_memory()
+            except (ImportError, AttributeError):
+                pass
+
+
 class OllamaBackend(Backend):
     """Communicates with a running Ollama server via its REST API."""
 
@@ -445,6 +531,7 @@ BACKENDS: dict[str, type[Backend]] = {
     "transformers": TransformersBackend,
     "llama.cpp": LlamaCppBackend,
     "ollama": OllamaBackend,
+    "mlx": MLXBackend,
 }
 
 
@@ -454,4 +541,6 @@ def pick_backend(model_info: ModelInfo) -> Backend:
         return OllamaBackend()
     if model_info.has_gguf:
         return LlamaCppBackend()
+    if _is_apple_silicon() and _mlx_available():
+        return MLXBackend()
     return TransformersBackend()

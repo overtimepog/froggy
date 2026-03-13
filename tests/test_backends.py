@@ -23,12 +23,14 @@ class TestPickBackend:
 
     def test_safetensors_gets_transformers(self):
         m = ModelInfo(name="test", path=Path("/fake"))
-        backend = pick_backend(m)
+        with patch("froggy.backends._mlx_available", return_value=False):
+            backend = pick_backend(m)
         assert isinstance(backend, TransformersBackend)
 
     def test_lora_gets_transformers(self):
         m = ModelInfo(name="test", path=Path("/fake"), has_lora=True)
-        backend = pick_backend(m)
+        with patch("froggy.backends._mlx_available", return_value=False):
+            backend = pick_backend(m)
         assert isinstance(backend, TransformersBackend)
 
 
