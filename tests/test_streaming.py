@@ -58,25 +58,30 @@ class TestStopStrings:
     def test_stop_string_detection(self):
         """Simulate what chat() does: detect stop strings and truncate."""
         raw = "Hello! How can I help you?<|im_end|><|im_start|>user"
-        for stop in _STOP_STRINGS:
-            if stop in raw:
-                raw = raw[:raw.index(stop)]
-                break
+        stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+        if stop_positions:
+            raw = raw[:min(stop_positions)]
         assert raw == "Hello! How can I help you?"
 
     def test_stop_string_at_start(self):
         raw = "<|im_end|>extra stuff"
-        for stop in _STOP_STRINGS:
-            if stop in raw:
-                raw = raw[:raw.index(stop)]
-                break
+        stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+        if stop_positions:
+            raw = raw[:min(stop_positions)]
         assert raw == ""
 
     def test_no_stop_string(self):
         raw = "Normal response without stop tokens."
         original = raw
-        for stop in _STOP_STRINGS:
-            if stop in raw:
-                raw = raw[:raw.index(stop)]
-                break
+        stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+        if stop_positions:
+            raw = raw[:min(stop_positions)]
         assert raw == original
+
+    def test_truncates_at_earliest_stop_when_multiple_exist(self):
+        """Regression: truncation must use the earliest marker, not first list match."""
+        raw = "answer<|endoftext|>tail<|im_end|>more"
+        stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+        if stop_positions:
+            raw = raw[:min(stop_positions)]
+        assert raw == "answer"

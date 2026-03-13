@@ -181,8 +181,8 @@ class TransformersBackend(Backend):
         if self.tokenizer.eos_token_id is not None:
             eos_ids.add(self.tokenizer.eos_token_id)
         # Add common end-of-turn tokens used by chat models
-        for tok_name in ["<|im_end|>", "<|endoftext|>", "<|eot_id|>",
-                         "<end_of_turn>", "</s>"]:
+        for tok_name in ["<|im_end|>", "<|im_start|>", "<|endoftext|>",
+                         "<|eot_id|>", "<end_of_turn>", "</s>"]:
             tok_id = self.tokenizer.convert_tokens_to_ids(tok_name)
             # convert_tokens_to_ids returns unk_token_id for unknown tokens
             if tok_id is not None and tok_id != self.tokenizer.unk_token_id:

@@ -79,13 +79,13 @@ class ChatSession:
                 raw = "".join(full_response)
 
                 # Safety-net: stop if the model emits a turn boundary token
-                # that wasn't caught by the EOS token ID list
-                for stop in _STOP_STRINGS:
-                    if stop in raw:
-                        raw = raw[:raw.index(stop)]
-                        full_response = [raw]
-                        stopped = True
-                        break
+                # that wasn't caught by the EOS token ID list.
+                # Find the earliest stop marker to avoid order-dependent bugs.
+                stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
+                if stop_positions:
+                    raw = raw[:min(stop_positions)]
+                    full_response = [raw]
+                    stopped = True
 
                 # Strip thinking blocks before display
                 display = strip_thinking(raw)
