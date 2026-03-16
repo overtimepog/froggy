@@ -65,31 +65,34 @@ CORE_TOOLS: list[ToolDef] = [
         ],
     ),
     ToolDef(
-        name="list_directory",
-        description="List files and directories at the given path.",
+        name="edit_file",
+        description="Replace an exact string match in a file with new content.",
         params=[
-            ToolParam("path", "string", "Directory path to list. Defaults to current directory.", required=False),
+            ToolParam("path", "string", "File path relative to project root."),
+            ToolParam("old_string", "string", "Exact text to find (must match uniquely)."),
+            ToolParam("new_string", "string", "Replacement text."),
         ],
     ),
     ToolDef(
         name="run_shell",
-        description="Execute a shell command and return its stdout and stderr.",
+        description="Run a shell command and return stdout+stderr. Timeout: 30s.",
         params=[
-            ToolParam("command", "string", "Shell command to execute."),
+            ToolParam("cmd", "string", "Shell command to execute."),
         ],
     ),
     ToolDef(
-        name="search_files",
-        description="Search for a text pattern in files under a directory.",
+        name="web_search",
+        description="Search the web and return top results with snippets.",
         params=[
-            ToolParam("pattern", "string", "Text or regex pattern to search for."),
-            ToolParam("directory", "string", "Directory to search in. Defaults to current directory.", required=False),
+            ToolParam("query", "string", "Search query."),
         ],
     ),
     ToolDef(
-        name="get_datetime",
-        description="Return the current date and time in ISO 8601 format.",
-        params=[],
+        name="python_eval",
+        description="Execute Python code and return the result. Has access to math, json, re, os.path.",
+        params=[
+            ToolParam("code", "string", "Python code to execute."),
+        ],
     ),
 ]
 

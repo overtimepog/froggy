@@ -181,9 +181,9 @@ class TestToolSelector:
         assert narrowed.names() == ["read_file"]
 
     def test_to_registry_contains_only_selected(self):
-        selector = ToolSelector(self.registry, allowed=["read_file", "get_datetime"])
+        selector = ToolSelector(self.registry, allowed=["read_file", "python_eval"])
         sub = selector.to_registry()
-        assert set(sub.names()) == {"read_file", "get_datetime"}
+        assert set(sub.names()) == {"read_file", "python_eval"}
 
     def test_empty_allowed_list(self):
         selector = ToolSelector(self.registry, allowed=[])
