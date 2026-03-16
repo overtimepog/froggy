@@ -1,0 +1,1 @@
+{"type":"convention","content":"Core tool names: read_file, write_file, edit_file, run_shell (param: cmd), web_search (param: query), python_eval (param: code). These match spec.md §4 exactly.","classification":"foundational","recorded_at":"2026-03-16T02:25:06.544Z","outcomes":[{"status":"success","agent":"fix-tools"}],"id":"mx-ae5554"}
