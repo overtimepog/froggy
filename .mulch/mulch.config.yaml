@@ -1,9 +1,9 @@
-
-
 version: '1'
 domains:
   - tools
   - integration
+  - architecture
+  - froggy
 governance:
   max_entries: 100
   warn_entries: 150

@@ -1,0 +1,1 @@
+{"type":"pattern","name":"tool-use-architecture","description":"Tool-use system: 4 modules (tools.py, tool_parser.py, tool_selector.py, tool_executor.py), 6 core tools, Hermes XML wire format, 3-tier safety, session integration with tool loop.","classification":"tactical","recorded_at":"2026-03-16T02:28:39.601Z","id":"mx-4c4e4c"}
