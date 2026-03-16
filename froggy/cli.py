@@ -11,7 +11,13 @@ from rich.table import Table
 
 from .backends import pick_backend
 from .discovery import ModelInfo, discover_models, discover_ollama_models
-from .session import ChatSession, handle_command
+from .session import (
+    _TOOLS_AVAILABLE,
+    FROGGY_PROJECT_ROOT,
+    ChatSession,
+    handle_command,
+    load_custom_tools,
+)
 
 console = Console()
 
@@ -48,6 +54,36 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
         return None
 
 
+def _build_tool_system(tools_dir: Path | None):
+    """Instantiate ToolRegistry and ToolExecutor if the tool modules are available.
+
+    Returns ``(registry, executor)`` or ``(None, None)`` when unavailable.
+    """
+    if not _TOOLS_AVAILABLE:
+        return None, None
+
+    try:
+        from .tool_executor import ToolExecutor
+        from .tools import CORE_TOOLS, ToolRegistry
+
+        # Start with core tools
+        all_tools = list(CORE_TOOLS)
+
+        # Append custom tools from the tools/ directory
+        if tools_dir is not None and tools_dir.is_dir():
+            custom = load_custom_tools(tools_dir)
+            if custom:
+                console.print(f"[dim]Loaded {len(custom)} custom tool(s) from {tools_dir}[/]")
+            all_tools.extend(custom)
+
+        registry = ToolRegistry(tools=all_tools)
+        executor = ToolExecutor()
+        return registry, executor
+    except Exception as exc:
+        console.print(f"[dim]Tool system unavailable: {exc}[/]")
+        return None, None
+
+
 @click.command()
 @click.option(
     "--models-dir",
@@ -61,7 +97,13 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
     default="auto",
     help="Device: auto, cpu, cuda, cuda:0, etc.",
 )
-def main(models_dir: Path | None, device: str):
+@click.option(
+    "--tools-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to scan for custom tool plugins. Defaults to tools/ in project root.",
+)
+def main(models_dir: Path | None, device: str, tools_dir: Path | None):
     """Chat with local HuggingFace models in your terminal."""
 
     if models_dir is None:
@@ -69,6 +111,12 @@ def main(models_dir: Path | None, device: str):
         models_dir = Path(__file__).resolve().parent.parent.parent / "AI"
         if not models_dir.is_dir():
             models_dir = Path.cwd()
+
+    # Resolve tools directory
+    if tools_dir is None:
+        project_root = Path(FROGGY_PROJECT_ROOT) if FROGGY_PROJECT_ROOT else Path.cwd()
+        candidate = project_root / "tools"
+        tools_dir = candidate if candidate.is_dir() else None
 
     console.print(Panel(BANNER, border_style="green", padding=(0, 2)))
 
@@ -86,13 +134,22 @@ def main(models_dir: Path | None, device: str):
         console.print("[dim]or start an Ollama server (ollama serve).[/]")
         sys.exit(1)
 
+    # Build tool system once (shared across model switches within a session)
+    tool_registry, tool_executor = _build_tool_system(tools_dir)
+
     while True:
         model_info = select_model(models)
         if model_info is None:
             break
 
         backend = pick_backend(model_info)
-        session = ChatSession(backend, model_info, device)
+        session = ChatSession(
+            backend,
+            model_info,
+            device,
+            tool_registry=tool_registry,
+            tool_executor=tool_executor,
+        )
 
         try:
             session.load()
