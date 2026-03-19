@@ -6,10 +6,7 @@ import json
 from typing import Iterator
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from froggy.session import ChatSession, handle_command, strip_thinking
-
+from froggy.session import ChatSession, handle_command
 
 # ---------------------------------------------------------------------------
 # Minimal stub classes so tests run without real backend / tool modules

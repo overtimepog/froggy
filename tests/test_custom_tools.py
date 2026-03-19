@@ -8,8 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from froggy.session import load_custom_tools, _TOOLS_AVAILABLE
-
+from froggy.session import _TOOLS_AVAILABLE, load_custom_tools
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,7 +49,6 @@ def test_load_custom_tools_returns_empty_when_unavailable(tmp_path):
 class TestLoadCustomToolsWithModules:
     def test_loads_single_tool_via_TOOL(self, tmp_path):
         """A file exporting TOOL = ToolDef(...) is loaded."""
-        from froggy.tools import ToolDef, ToolParam
 
         _write_tool_file(tmp_path, "my_tool.py", """
             from froggy.tools import ToolDef, ToolParam

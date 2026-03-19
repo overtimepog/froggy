@@ -1,6 +1,8 @@
 """CLI entry point and main loop."""
 
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -10,7 +12,12 @@ from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
 from .backends import pick_backend
+from .config import get_config, load_config, set_config
 from .discovery import ModelInfo, discover_models, discover_ollama_models
+from .download import download_model, list_variants
+from .llmfit import ensure_llmfit, llmfit_recommend
+from .models import list_models, model_info, remove_model
+from .paths import models_dir
 from .session import (
     _TOOLS_AVAILABLE,
     FROGGY_PROJECT_ROOT,
@@ -84,7 +91,91 @@ def _build_tool_system(tools_dir: Path | None):
         return None, None
 
 
-@click.command()
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
+    """Chat with local HuggingFace models in your terminal."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(chat)
+
+
+@cli.command()
+@click.argument("source")
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["auto", "mlx", "gguf", "safetensors"]),
+    default="auto",
+    help="Model format to download.",
+)
+@click.option("--pick", is_flag=True, help="Interactively pick from available variants.")
+def download(source, fmt, pick):
+    """Download a HuggingFace model to ~/.froggy/models/."""
+    if pick:
+        from huggingface_hub import HfApi
+        from rich.prompt import IntPrompt
+
+        api = HfApi()
+        console.print(f"[cyan]Scanning variants for[/] {source}…")
+        try:
+            from .download import parse_source as _ps
+
+            _ps(source)  # validate input early
+            variants = list_variants(source, api=api)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+
+        if not variants:
+            raise click.ClickException(f"No variants found for '{source}'.")
+
+        tbl = Table(title="Available Variants", border_style="cyan", title_style="bold cyan")
+        tbl.add_column("#", style="bold", width=3)
+        tbl.add_column("Type")
+        tbl.add_column("Repo / File")
+        tbl.add_column("Quant", style="dim")
+        tbl.add_column("Size", style="dim")
+
+        for i, v in enumerate(variants, 1):
+            label = v["filename"] if v["filename"] else v["repo"]
+            quant = v["quant"] or "—"
+            size = f"{v['size'] / 1e9:.1f} GB" if v["size"] else "—"
+            tbl.add_row(str(i), v["type"], label, quant, size)
+
+        console.print()
+        console.print(tbl)
+        console.print()
+
+        try:
+            choice = IntPrompt.ask(
+                "[bold]Select a variant[/]",
+                choices=[str(i) for i in range(1, len(variants) + 1)],
+            )
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        selected = variants[choice - 1]
+        # Download the chosen variant
+        if selected["type"] == "gguf" and selected["filename"]:
+            download_model(
+                f"https://huggingface.co/{selected['repo']}/blob/main/{selected['filename']}",
+                fmt="gguf",
+                api=api,
+            )
+        else:
+            download_model(source, fmt=selected["type"], api=api)
+        return
+
+    # Non-pick mode: run fallback chain
+    try:
+        download_model(source, fmt=fmt)
+    except click.ClickException:
+        raise
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@cli.command()
+@click.pass_context
 @click.option(
     "--models-dir",
     type=click.Path(exists=True, path_type=Path),
@@ -103,8 +194,8 @@ def _build_tool_system(tools_dir: Path | None):
     default=None,
     help="Directory to scan for custom tool plugins. Defaults to tools/ in project root.",
 )
-def main(models_dir: Path | None, device: str, tools_dir: Path | None):
-    """Chat with local HuggingFace models in your terminal."""
+def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
+    """Start an interactive chat session with a local model."""
 
     if models_dir is None:
         # Default: look in ../AI relative to the froggy package
@@ -138,14 +229,14 @@ def main(models_dir: Path | None, device: str, tools_dir: Path | None):
     tool_registry, tool_executor = _build_tool_system(tools_dir)
 
     while True:
-        model_info = select_model(models)
-        if model_info is None:
+        selected_model = select_model(models)
+        if selected_model is None:
             break
 
-        backend = pick_backend(model_info)
+        backend = pick_backend(selected_model)
         session = ChatSession(
             backend,
-            model_info,
+            selected_model,
             device,
             tool_registry=tool_registry,
             tool_executor=tool_executor,
@@ -192,3 +283,179 @@ def main(models_dir: Path | None, device: str, tools_dir: Path | None):
             break
 
     console.print("[dim]Goodbye! \U0001f438[/]")
+
+
+def _format_size(size_bytes: int) -> str:
+    """Format a byte count as a human-readable string."""
+    if size_bytes >= 1_000_000_000:
+        return f"{size_bytes / 1_000_000_000:.1f} GB"
+    if size_bytes >= 1_000_000:
+        return f"{size_bytes / 1_000_000:.1f} MB"
+    if size_bytes >= 1_000:
+        return f"{size_bytes / 1_000:.1f} KB"
+    return f"{size_bytes} B"
+
+
+@cli.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def list_cmd(as_json):
+    """List downloaded models."""
+    models = list_models(models_dir())
+
+    if not models:
+        click.echo("No models found.")
+        return
+
+    if as_json:
+        click.echo(json.dumps(models, indent=2, default=str))
+        return
+
+    tbl = Table(title="Downloaded Models", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("Name", style="bold")
+    tbl.add_column("Format")
+    tbl.add_column("Size", justify="right")
+    tbl.add_column("Modified", style="dim")
+
+    for m in models:
+        modified = datetime.fromtimestamp(m["modified"], tz=timezone.utc).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        tbl.add_row(m["name"], m["format"], _format_size(m["size"]), modified)
+
+    console.print(tbl)
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def remove(name, yes):
+    """Remove a downloaded model."""
+    mdir = models_dir()
+    try:
+        info = model_info(name, mdir)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    size_str = _format_size(info["size"])
+
+    if not yes:
+        click.confirm(
+            f"Remove '{info['name']}' ({size_str})?",
+            abort=True,
+        )
+
+    freed = remove_model(name, mdir)
+    click.echo(f"Removed '{info['name']}' — freed {_format_size(freed)}")
+
+
+@cli.command()
+@click.argument("name")
+def info(name):
+    """Show detailed information about a model."""
+    try:
+        meta = model_info(name, models_dir())
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    modified = datetime.fromtimestamp(meta["modified"], tz=timezone.utc).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+
+    lines = [
+        f"[bold]Name:[/]          {meta['name']}",
+        f"[bold]Path:[/]          {meta['path']}",
+        f"[bold]Format:[/]        {meta['format']}",
+        f"[bold]Size:[/]          {_format_size(meta['size'])}",
+        f"[bold]Model type:[/]    {meta['model_type']}",
+        f"[bold]Architectures:[/] {', '.join(meta['architectures']) or 'N/A'}",
+        f"[bold]Files:[/]         {meta['file_count']}",
+        f"[bold]Has GGUF:[/]      {'Yes' if meta['has_gguf'] else 'No'}",
+        f"[bold]Has LoRA:[/]      {'Yes' if meta['has_lora'] else 'No'}",
+        f"[bold]Modified:[/]      {modified}",
+    ]
+
+    console.print(Panel("\n".join(lines), title=meta["name"], border_style="cyan"))
+
+
+@cli.command()
+@click.option("--limit", default=5, type=int, help="Max number of recommendations.")
+@click.option("--use-case", default=None, type=str, help="Target use case (e.g. coding, chat).")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON.")
+def recommend(limit, use_case, as_json):
+    """Recommend hardware-matched models via llmfit."""
+    binary_path = ensure_llmfit()
+    if binary_path is None:
+        console.print("[red]Error:[/] Could not install or find llmfit binary.")
+        raise SystemExit(1)
+
+    models = llmfit_recommend(binary_path, limit=limit, use_case=use_case)
+
+    if not models:
+        console.print("[yellow]No recommendations available.[/]")
+        return
+
+    if as_json:
+        click.echo(json.dumps(models, indent=2))
+        return
+
+    tbl = Table(title="Recommended Models", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("Model", style="bold")
+    tbl.add_column("Score", justify="right")
+    tbl.add_column("Speed (TPS)", justify="right")
+    tbl.add_column("Quant", style="dim")
+    tbl.add_column("Fit")
+    tbl.add_column("Run Mode")
+    tbl.add_column("Memory", justify="right")
+
+    for m in models:
+        tbl.add_row(
+            m["name"],
+            str(m["score"]),
+            f"{m['estimated_tps']:.1f}",
+            m["best_quant"],
+            m["fit_level"],
+            m["run_mode"],
+            f"{m['memory_required_gb']:.1f} GB",
+        )
+
+    console.print(tbl)
+
+
+# ---------------------------------------------------------------------------
+# Config command group
+# ---------------------------------------------------------------------------
+
+
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def config(ctx):
+    """View or modify froggy configuration."""
+    if ctx.invoked_subcommand is not None:
+        return
+    # Bare `froggy config` — show all settings
+    data = load_config()
+    if not data:
+        click.echo("No configuration set. Use 'froggy config set <key> <value>' to add settings.")
+        return
+    for key, value in data.items():
+        click.echo(f"{key}: {value}")
+
+
+@config.command("get")
+@click.argument("key")
+def config_get(key):
+    """Get a config value by key."""
+    value = get_config(key)
+    if value is None:
+        click.echo(f"{key} is not set.")
+    else:
+        click.echo(f"{key}: {value}")
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a config value."""
+    set_config(key, value)
+    click.echo(f"Set {key} = {value}")
