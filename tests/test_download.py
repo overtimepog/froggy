@@ -127,7 +127,12 @@ class TestFindMlxRepo:
         def model_info_side_effect(repo_id, **kwargs):
             if repo_id in found_repos:
                 return MagicMock()
-            raise RepositoryNotFoundError(f"{repo_id} not found")
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_resp.headers = {}
+            raise RepositoryNotFoundError(
+                f"{repo_id} not found", response=mock_resp
+            )
 
         api.model_info.side_effect = model_info_side_effect
         return api
@@ -160,7 +165,12 @@ class TestFindMlxRepo:
         from huggingface_hub.utils import HfHubHTTPError
 
         api = MagicMock()
-        api.model_info.side_effect = HfHubHTTPError("rate limited")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        mock_resp.headers = {}
+        api.model_info.side_effect = HfHubHTTPError(
+            "rate limited", response=mock_resp
+        )
         result = find_mlx_repo("org/model", api)
         assert result is None
 
@@ -453,7 +463,12 @@ class TestListVariants:
                     for f in (gguf_files or [])
                 ]
                 return info
-            raise RepositoryNotFoundError(f"{repo_id} not found")
+            mock_resp = MagicMock()
+            mock_resp.status_code = 404
+            mock_resp.headers = {}
+            raise RepositoryNotFoundError(
+                f"{repo_id} not found", response=mock_resp
+            )
 
         api.model_info.side_effect = model_info_side_effect
         return api
