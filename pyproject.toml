@@ -29,6 +29,9 @@ tools = [
 [project.scripts]
 froggy = "froggy.cli:cli"
 
+[tool.setuptools.packages.find]
+include = ["froggy*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

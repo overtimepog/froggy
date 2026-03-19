@@ -10,8 +10,8 @@ MIN_PYTHON=(3 11)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-info()  { printf '\033[1;32m==> %s\033[0m\n' "$*"; }
-warn()  { printf '\033[1;33m==> %s\033[0m\n' "$*"; }
+info()  { printf '\033[1;32m==> %s\033[0m\n' "$*" >&2; }
+warn()  { printf '\033[1;33m==> %s\033[0m\n' "$*" >&2; }
 fail()  { printf '\033[1;31mError: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ── find python ≥ 3.11 ──────────────────────────────────────────────────────
@@ -75,6 +75,9 @@ else
     git clone "$REPO" "$INSTALL_DIR"
 fi
 
+# clean stale build artifacts that confuse setuptools
+rm -rf "${INSTALL_DIR}/build" "${INSTALL_DIR}"/*.egg-info
+
 # ── create venv & install ────────────────────────────────────────────────────
 
 if [[ ! -d "$VENV_DIR" ]]; then
@@ -84,7 +87,7 @@ fi
 
 info "Installing froggy [${EXTRAS}]..."
 "${VENV_DIR}/bin/pip" install --upgrade pip --quiet
-"${VENV_DIR}/bin/pip" install -e "${INSTALL_DIR}[${EXTRAS}]" --quiet
+"${VENV_DIR}/bin/pip" install "${INSTALL_DIR}[${EXTRAS}]" --quiet
 
 # ── symlink into PATH ────────────────────────────────────────────────────────
 
