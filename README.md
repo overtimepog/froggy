@@ -18,6 +18,20 @@ A terminal-based chat tool for running local AI models. Supports HuggingFace Tra
 
 ## Installation
 
+### One-line install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/overtimepog/froggy/main/install.sh | bash
+```
+
+This auto-detects your platform (Apple Silicon → MLX, CUDA → GPU, otherwise CPU) and installs froggy with the right backends. Customize the install location with `FROGGY_INSTALL_DIR`:
+
+```bash
+FROGGY_INSTALL_DIR=~/my-froggy curl -fsSL https://raw.githubusercontent.com/overtimepog/froggy/main/install.sh | bash
+```
+
+### Manual install
+
 ```bash
 # Clone the repo
 git clone https://github.com/overtimepog/froggy.git
