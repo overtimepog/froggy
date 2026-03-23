@@ -24,6 +24,24 @@ _QWEN_RE = re.compile(
     re.DOTALL,
 )
 
+# Claude XML format: <function_calls><invoke><tool_name>N</tool_name><parameters>...</parameters></invoke></function_calls>
+_CLAUDE_INVOKE_RE = re.compile(
+    r"<function_calls>\s*(.*?)</function_calls>",
+    re.DOTALL,
+)
+_CLAUDE_TOOL_RE = re.compile(
+    r"<invoke>\s*<tool_name>(.*?)</tool_name>\s*<parameters>(.*?)</parameters>\s*</invoke>",
+    re.DOTALL,
+)
+# Extract <key>value</key> pairs from Claude-style <parameters> blocks
+_CLAUDE_PARAM_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
+
+# Gemini/generic functionCall JSON: {"functionCall": {"name": "...", "args": {...}}}
+_GEMINI_FC_RE = re.compile(
+    r'"functionCall"\s*:\s*\{[^}]*"name"\s*:\s*"(\w+)"[^}]*"args"\s*:\s*(\{[^}]*\})',
+    re.DOTALL,
+)
+
 
 @dataclass
 class ToolCall:
@@ -103,8 +121,38 @@ class ToolCallParser:
             calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
             remaining = remaining[: m.start()] + remaining[m.end() :]
 
+        # --- Claude XML format: <function_calls><invoke>...</invoke></function_calls> ---
+        while True:
+            m = _CLAUDE_INVOKE_RE.search(remaining)
+            if not m:
+                break
+            inner = m.group(1)
+            for tm in _CLAUDE_TOOL_RE.finditer(inner):
+                tool_name = tm.group(1).strip()
+                params_xml = tm.group(2)
+                args = {}
+                for pm in _CLAUDE_PARAM_RE.finditer(params_xml):
+                    args[pm.group(1)] = pm.group(2).strip()
+                calls.append(ToolCall(name=tool_name, arguments=args, raw=tm.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Gemini functionCall JSON ---
+        while True:
+            m = _GEMINI_FC_RE.search(remaining)
+            if not m:
+                break
+            func_name = m.group(1)
+            try:
+                args = json.loads(m.group(2))
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
         # --- Bare JSON fallback (only when no partial XML tag is open) ---
-        if "<tool_call>" not in remaining and "<function=" not in remaining and "<|tool_call_start|>" not in remaining:
+        if ("<tool_call>" not in remaining and "<function=" not in remaining
+                and "<|tool_call_start|>" not in remaining
+                and "<function_calls>" not in remaining):
             parsed, remaining = _extract_bare_json_calls(remaining)
             calls.extend(parsed)
 
