@@ -339,13 +339,40 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
             console.print(f"[red]Failed to load model:[/] {e}")
             continue
 
-        console.print("\n[dim]Type [cyan]/help[/dim][cyan][/] for commands, [cyan]/quit[/] to exit.[/]\n")
+        # Show a compact welcome with useful context
+        ctx_limit = session.context_mgr.context_limit
+        profile = session.context_mgr.profile_name
+        tools_state = "on" if session.tools_enabled else "off"
+        console.print(f"\n[dim]Context: {ctx_limit:,} tokens · Profile: {profile} · Tools: {tools_state}[/]")
+        console.print("[dim]Type [cyan]/help[/dim][cyan][/] for commands, [cyan]/quit[/] to exit.[/]\n")
+
+        # Set up readline for arrow keys, history, and line editing
+        _has_readline = False
+        histfile = ""
+        try:
+            import readline
+            histfile = str(Path.home() / ".froggy" / "history")
+            Path(histfile).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                readline.read_history_file(histfile)
+            except (FileNotFoundError, PermissionError, OSError):
+                pass
+            readline.set_history_length(500)
+            _has_readline = True
+        except (ImportError, OSError):
+            pass
+
+        def _input_prompt() -> str | None:
+            """Read user input with readline support."""
+            try:
+                return input("\033[1;32mYou\033[0m: ")
+            except (KeyboardInterrupt, EOFError):
+                return None
 
         try:
             while True:
-                try:
-                    user_input = Prompt.ask("[bold green]You[/]")
-                except (KeyboardInterrupt, EOFError):
+                user_input = _input_prompt()
+                if user_input is None:
                     break
 
                 if not user_input.strip():
@@ -372,6 +399,13 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
         except KeyboardInterrupt:
             backend.unload()
             break
+        finally:
+            # Save readline history
+            if _has_readline and histfile:
+                try:
+                    readline.write_history_file(histfile)
+                except (PermissionError, OSError):
+                    pass
 
     console.print("[dim]Goodbye! \U0001f438[/]")
 
@@ -420,18 +454,39 @@ def list_cmd(as_json):
 @click.argument("name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 def remove(name, yes):
-    """Remove a downloaded model."""
+    """Remove a saved model or a downloaded model.
+
+    Checks saved models first, then downloaded models.
+    """
+    # Try saved models first
+    saved = get_saved_models()
+    matches = [m for m in saved if name.lower() in m.get("name", "").lower()]
+    if matches:
+        if not yes:
+            names = ", ".join(m["name"] for m in matches)
+            click.confirm(f"Remove saved model(s): {names}?", abort=True)
+        ok = remove_saved_model(name)
+        if ok:
+            console.print(f"[green]✓[/] Removed saved model(s) matching '{name}'.")
+        return
+
+    # Fall back to downloaded models
     mdir = models_dir()
     try:
         info = model_info(name, mdir)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    except ValueError:
+        # Not found anywhere
+        raise click.ClickException(
+            f"No model matching '{name}' in saved models or {mdir}.\n"
+            f"  Use [cyan]froggy models[/] to see saved models.\n"
+            f"  Use [cyan]froggy list[/] to see downloaded models."
+        )
 
     size_str = _format_size(info["size"])
 
     if not yes:
         click.confirm(
-            f"Remove '{info['name']}' ({size_str})?",
+            f"Remove downloaded '{info['name']}' ({size_str})?",
             abort=True,
         )
 

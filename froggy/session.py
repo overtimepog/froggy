@@ -6,12 +6,14 @@ import importlib.util
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -258,12 +260,16 @@ class ChatSession:
                 self.messages.append({"role": "assistant", "content": response_text})
 
                 # Execute each tool call and inject result as a user message
-                # using Hermes-style <tool_response> XML so the model understands.
                 for call in tool_calls:
                     result = self._executor.execute(call.name, **call.arguments)
                     result_json = json.dumps(result)
                     status_icon = "[green]\u2713[/]" if result.get("ok") else "[red]\u2717[/]"
-                    console.print(f"  [dim]\u2192 Tool:[/] [cyan]{call.name}[/] {status_icon}")
+                    # Show tool name and a preview of the result
+                    preview = ""
+                    if result.get("ok") and result.get("output"):
+                        out = str(result["output"])
+                        preview = f" [dim]({len(out)} chars)[/]" if len(out) > 100 else ""
+                    console.print(f"  [dim]\u2192 Tool:[/] [cyan]{call.name}[/] {status_icon}{preview}")
                     self.messages.append({
                         "role": "user",
                         "content": f"<tool_response>\n{result_json}\n</tool_response>",
@@ -281,6 +287,14 @@ class ChatSession:
                 prompt_tokens = estimate_messages_tokens(self.messages, self.model_info.name)
                 completion_tokens = estimate_tokens(response_text, self.model_info.name)
                 self.context_mgr.usage.record(prompt_tokens, completion_tokens)
+
+                # Warn if context is getting full
+                full_msgs = [{"role": "system", "content": self._build_system_prompt()}] + self.messages
+                util = self.context_mgr.count_tokens(full_msgs) / self.context_mgr.available_tokens if self.context_mgr.available_tokens > 0 else 0
+                if util > 0.85:
+                    console.print(f"[yellow]  ⚠ Context {util:.0%} full — older messages may be trimmed soon[/]")
+                elif util > 0.6:
+                    console.print(f"[dim]  Context: {util:.0%}[/]")
                 break
 
     def _generate_one_round(self) -> tuple[str, list]:
@@ -308,15 +322,29 @@ class ChatSession:
         if self.tools_enabled and _TOOLS_AVAILABLE and ToolCallParser is not None:
             parser = ToolCallParser()
 
-        with Live(Text("\u258d", style="bold cyan"), console=console, refresh_per_second=15) as live:
+        first_token = True
+        token_count = 0
+        t_start = time.time()
+        t_first_token = t_start
+
+        # Phase 1: Show thinking spinner until first token arrives
+        with Live(
+            Spinner("dots", text="[dim]Thinking...[/]", style="cyan"),
+            console=console,
+            refresh_per_second=15,
+        ) as live:
             for chunk in self.backend.generate_stream(
                 full_messages, self.temperature, self.max_tokens
             ):
                 full_response.append(chunk)
+                token_count += 1
                 raw = "".join(full_response)
 
+                if first_token:
+                    t_first_token = time.time()
+                    first_token = False
+
                 # Safety-net: stop if the model emits a turn boundary token
-                # that wasn't caught by the EOS token ID list.
                 stop_positions = [raw.index(s) for s in _STOP_STRINGS if s in raw]
                 if stop_positions:
                     raw = raw[:min(stop_positions)]
@@ -330,6 +358,7 @@ class ChatSession:
                 # Strip thinking blocks before display
                 display = strip_thinking(raw)
 
+                # Switch from spinner to streaming text after first token
                 try:
                     live.update(Markdown(display + " \u258d"))
                 except Exception:
@@ -337,6 +366,20 @@ class ChatSession:
 
                 if stopped:
                     break
+
+        # Show generation stats
+        t_end = time.time()
+        elapsed = t_end - t_start
+        ttft = t_first_token - t_start
+        tps = token_count / elapsed if elapsed > 0 else 0
+        if token_count > 0:
+            stats_parts = []
+            if ttft < elapsed:
+                stats_parts.append(f"first token: {ttft:.1f}s")
+            stats_parts.append(f"{token_count} tokens")
+            stats_parts.append(f"{tps:.1f} tok/s")
+            stats_parts.append(f"{elapsed:.1f}s")
+            console.print(f"[dim]  {' · '.join(stats_parts)}[/]")
 
         # Collect any remaining tool calls that were buffered during streaming.
         tool_calls: list = list(streaming_calls)
