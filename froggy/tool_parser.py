@@ -10,6 +10,20 @@ from typing import Any
 # Hermes-style tool call: <tool_call>...</tool_call>
 _HERMES_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 
+# Alternative format some models use: <function=name> <parameter=key> value </function>
+_FUNC_RE = re.compile(
+    r"<(?:tool_call\s*)?<?\s*function=(\w+)>(.*?)</(?:tool_call|function)>",
+    re.DOTALL,
+)
+# Parameter extraction within <function=...> blocks
+_PARAM_RE = re.compile(r"<parameter=(\w+)>\s*(.*?)(?=<parameter=|$)", re.DOTALL)
+
+# Qwen/ChatML-style: <|tool_call_start|>[func(arg=val, ...)]<|tool_call_end|>
+_QWEN_RE = re.compile(
+    r"<\|tool_call_start\|>\[(\w+)\((.*?)\)\]<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
 
 @dataclass
 class ToolCall:
@@ -58,16 +72,73 @@ class ToolCallParser:
                 break
             inner = m.group(1).strip()
             call = _try_parse_json(inner, m.group(0))
+            if call is None:
+                # Try <function=name> format inside <tool_call> tags
+                call = _try_parse_function_format(inner, m.group(0))
             if call:
                 calls.append(call)
             remaining = remaining[: m.start()] + remaining[m.end() :]
 
+        # --- <function=name> format pass ---
+        while True:
+            m = _FUNC_RE.search(remaining)
+            if not m:
+                break
+            func_name = m.group(1)
+            body = m.group(2)
+            args = {}
+            for pm in _PARAM_RE.finditer(body):
+                args[pm.group(1).strip()] = pm.group(2).strip()
+            calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Qwen/ChatML format: <|tool_call_start|>[func(k=v)]<|tool_call_end|> ---
+        while True:
+            m = _QWEN_RE.search(remaining)
+            if not m:
+                break
+            func_name = m.group(1)
+            args_str = m.group(2).strip()
+            args = _parse_kwarg_string(args_str)
+            calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
         # --- Bare JSON fallback (only when no partial XML tag is open) ---
-        if "<tool_call>" not in remaining:
+        if "<tool_call>" not in remaining and "<function=" not in remaining and "<|tool_call_start|>" not in remaining:
             parsed, remaining = _extract_bare_json_calls(remaining)
             calls.extend(parsed)
 
         return calls, remaining
+
+
+def _try_parse_function_format(text: str, raw: str) -> ToolCall | None:
+    """Try to parse <function=name> <parameter=key> value format."""
+    fm = re.search(r"<function=(\w+)>(.*)", text, re.DOTALL)
+    if not fm:
+        return None
+    func_name = fm.group(1)
+    body = fm.group(2)
+    args = {}
+    for pm in _PARAM_RE.finditer(body):
+        args[pm.group(1).strip()] = pm.group(2).strip()
+    if func_name:
+        return ToolCall(name=func_name, arguments=args, raw=raw)
+    return None
+
+
+def _parse_kwarg_string(s: str) -> dict[str, Any]:
+    """Parse a Python-style keyword argument string like ``code='2**64', x=3``.
+
+    Handles quoted strings (single and double) and bare values.
+    Returns a dict of string keys to string values.
+    """
+    args: dict[str, Any] = {}
+    # Match key=value pairs where value is quoted or bare
+    for m in re.finditer(r"(\w+)\s*=\s*(?:'([^']*)'|\"([^\"]*)\"|(\S+))", s):
+        key = m.group(1)
+        val = m.group(2) if m.group(2) is not None else (m.group(3) if m.group(3) is not None else m.group(4))
+        args[key] = val
+    return args
 
 
 def _try_parse_json(text: str, raw: str) -> ToolCall | None:

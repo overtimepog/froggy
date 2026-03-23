@@ -16,7 +16,12 @@ from rich.table import Table
 from rich.text import Text
 
 from .backends import Backend
-from .context import ContextManager, context_limit_for_model, estimate_messages_tokens
+from .context import (
+    AGENT_SYSTEM_PROMPT,
+    ContextManager,
+    context_limit_for_model,
+    estimate_messages_tokens,
+)
 from .discovery import ModelInfo
 
 # ---------------------------------------------------------------------------
@@ -164,7 +169,7 @@ class ChatSession:
         self.model_info = model_info
         self.device = device
         self.messages: list[dict] = []
-        self.system_prompt: str = "You are a helpful assistant."
+        self.system_prompt: str = AGENT_SYSTEM_PROMPT
         self.temperature: float = 0.7
         self.max_tokens: int = 1024
 

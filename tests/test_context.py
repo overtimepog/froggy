@@ -116,17 +116,16 @@ class TestBuildToolInstructions:
     def test_includes_tool_block(self):
         result = build_tool_instructions("my tools here")
         assert "my tools here" in result
-        assert "Tool Use Instructions" in result
+        assert "Tool System" in result
 
     def test_with_examples(self):
         result = build_tool_instructions("tools", include_examples=True)
         assert "read_file" in result
-        assert "run_shell" in result
-        assert "Examples" in result
+        assert "Format Reference" in result
 
     def test_without_examples(self):
         result = build_tool_instructions("tools", include_examples=False)
-        assert "Examples" not in result
+        assert "Format Reference" not in result
         assert "tools" in result
 
 
@@ -320,15 +319,15 @@ class TestContextManager:
     def test_build_system_context_with_tools(self):
         mgr = ContextManager(context_limit=10_000)
         result = mgr.build_system_context("You are helpful.", tool_block="[tool defs]")
-        assert "Tool Use Instructions" in result
+        assert "Tool System" in result
         assert "[tool defs]" in result
-        assert "Examples" in result  # standard profile includes examples
+        assert "Format Reference" in result  # standard profile includes examples
 
     def test_build_system_context_minimal_no_examples(self):
         mgr = ContextManager(context_limit=10_000, profile="minimal")
         result = mgr.build_system_context("You are helpful.", tool_block="[tool defs]")
-        assert "Tool Use Instructions" in result
-        assert "Examples" not in result
+        assert "Tool System" in result
+        assert "Format Reference" not in result
 
     def test_build_system_context_with_injected(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:

@@ -110,7 +110,7 @@ class TestChatSession:
         assert session.messages == []
         assert session.temperature == 0.7
         assert session.max_tokens == 1024
-        assert session.system_prompt == "You are a helpful assistant."
+        assert "froggy" in session.system_prompt.lower()  # agent system prompt
 
     def test_clear(self, session):
         session.messages = [{"role": "user", "content": "test"}]

@@ -134,40 +134,76 @@ PROFILES = {
 # ---------------------------------------------------------------------------
 
 def build_tool_instructions(tool_block: str, include_examples: bool = True) -> str:
-    """Build clear tool-use instructions to inject into context.
+    """Build agent-quality tool-use instructions for the system prompt.
 
-    This is the key to making tool use reliable across models — we don't
-    just list the tools, we show the model exactly how to format calls
-    and what to expect back.
+    This is the core of making froggy an agent harness — the model needs
+    to understand HOW to think about tool use, not just the format.
     """
     instructions = (
-        "# Tool Use Instructions\n\n"
-        "You have tools available. To call a tool, output EXACTLY this format:\n\n"
-        '<tool_call>{"name": "TOOL_NAME_HERE", "arguments": {"param": "value"}}</tool_call>\n\n'
+        "# Tool System\n\n"
+        "You have tools available to help accomplish tasks. Use them proactively "
+        "when they would help answer the user's question or complete their request.\n\n"
+        "## When to Use Tools\n\n"
+        "- **DO use tools** when the user asks about files, code, the project, "
+        "system state, or anything you'd need to look up rather than guess\n"
+        "- **DO use tools** when the user asks you to DO something (write, run, search, compute)\n"
+        "- **DO NOT use tools** for simple conversation, greetings, opinions, "
+        "general knowledge, or questions you can answer from the conversation context\n"
+        "- **Think first** — decide what you need to know, then use the right tool to get it\n"
+        "- **Chain tools** — if a task requires multiple steps, call tools one at a time "
+        "across turns, building on each result\n\n"
+        "## Tool Call Format\n\n"
+        "To call a tool, output exactly:\n\n"
+        '<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\n'
+        "After your tool call, stop and wait. The tool result will appear in a "
+        "<tool_response> block. Read it, then either call another tool or respond "
+        "to the user.\n\n"
         "Rules:\n"
-        "- Replace TOOL_NAME_HERE with the actual tool name from the list below\n"
-        "- Output the <tool_call> tag with valid JSON inside — no other format\n"
-        "- Wait for the <tool_response> before continuing\n"
-        "- You can call multiple tools in sequence across turns\n"
-        "- Always use the exact parameter names from the tool definitions\n"
-        "- If a tool returns an error, explain the issue and try a different approach\n\n"
+        "- Use ONLY tool names from the Available Tools list below\n"
+        "- Output valid JSON inside the <tool_call> tags\n"
+        "- One tool call per turn — wait for the response before calling another\n"
+        "- If a tool errors, explain the issue and try a different approach\n"
+        "- NEVER fabricate tool responses — only use information from actual <tool_response> blocks\n\n"
     )
 
     if include_examples:
         instructions += (
-            "## Format Examples (do NOT call these — they show the format only)\n\n"
-            "Example of reading a file:\n"
-            '<tool_call>{"name": "read_file", "arguments": {"path": "src/main.py"}}</tool_call>\n\n'
-            "Example of running a shell command:\n"
-            '<tool_call>{"name": "run_shell", "arguments": {"cmd": "ls -la"}}</tool_call>\n\n'
-            "Example of searching the web:\n"
-            '<tool_call>{"name": "web_search", "arguments": {"query": "python asyncio tutorial"}}</tool_call>\n\n'
-            "Example of running Python code:\n"
-            '<tool_call>{"name": "python_eval", "arguments": {"code": "import math; math.factorial(10)"}}</tool_call>\n\n'
+            "## Format Reference\n\n"
+            "```\n"
+            '<tool_call>{"name": "read_file", "arguments": {"path": "src/main.py"}}</tool_call>\n'
+            "```\n\n"
         )
 
     instructions += "## Available Tools\n\n" + tool_block
     return instructions
+
+
+# ---------------------------------------------------------------------------
+# Agent system prompt
+# ---------------------------------------------------------------------------
+
+AGENT_SYSTEM_PROMPT = """\
+You are froggy, an AI assistant with access to tools. You help users by \
+understanding their intent and taking action — reading files, running code, \
+searching the web, or executing commands as needed.
+
+## How You Work
+
+1. **Understand the request** — figure out what the user actually needs
+2. **Plan your approach** — decide if you need tools, which ones, and in what order
+3. **Execute** — use tools when needed, or just respond if you have the answer
+4. **Verify** — check your results make sense before responding
+
+## Key Behaviors
+
+- **Be proactive**: if the user asks "what does this project do?", read the README \
+yourself instead of asking them to paste it
+- **Be direct**: give the answer, not a description of how you'd find it
+- **Use context**: if files or project info are already in your context, use that \
+instead of re-reading with tools
+- **Handle errors**: if a tool fails, explain what went wrong and try an alternative
+- **Stay focused**: don't call tools unless they help accomplish the task\
+"""
 
 
 def read_file_for_injection(path: str, max_tokens: int = 4000) -> str | None:
