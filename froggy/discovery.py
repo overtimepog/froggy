@@ -17,9 +17,14 @@ class ModelInfo:
     lora_base_model: str | None = None
     has_gguf: bool = False
     is_ollama: bool = False
+    is_openrouter: bool = False
+    context_length: int | None = None
 
     @property
     def label(self) -> str:
+        if self.is_openrouter:
+            ctx = f" ({self.context_length:,}ctx)" if self.context_length else ""
+            return f"{self.name} [bold yellow]\\[OpenRouter][/]{ctx}"
         if self.is_ollama:
             return f"{self.name} [bold blue]\\[Ollama][/]"
         if self.has_lora and self.lora_base_model:
@@ -112,6 +117,60 @@ def discover_ollama_models(
                 path=Path(base_url),  # placeholder — Ollama manages files
                 model_type=details.get("family", ""),
                 is_ollama=True,
+            )
+        )
+    return models
+
+
+def discover_openrouter_models(
+    api_key: str | None = None,
+) -> list[ModelInfo]:
+    """Query the OpenRouter API for available models.
+
+    Requires an API key via parameter, OPENROUTER_API_KEY env var,
+    or froggy config.  Returns an empty list if the key is missing
+    or the request fails.
+    """
+    import os
+    import urllib.request
+
+    key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        # Try loading from froggy config
+        try:
+            from .config import get_config
+            key = get_config("openrouter_api_key", "") or ""
+        except Exception:
+            pass
+    if not key:
+        return []
+
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "HTTP-Referer": "https://github.com/overtimepog/froggy",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except OSError:
+        return []
+
+    models: list[ModelInfo] = []
+    for entry in data.get("data", []):
+        model_id = entry.get("id", "")
+        if not model_id:
+            continue
+        ctx_length = entry.get("context_length")
+        models.append(
+            ModelInfo(
+                name=model_id,
+                path=Path("https://openrouter.ai"),
+                model_type=entry.get("architecture", {}).get("modality", "text"),
+                is_openrouter=True,
+                context_length=ctx_length,
             )
         )
     return models

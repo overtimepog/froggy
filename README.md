@@ -1,10 +1,12 @@
 # froggy
 
-A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters), GGUF models via llama.cpp, Apple MLX on Apple Silicon, and Ollama.
+A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters), GGUF models via llama.cpp, Apple MLX on Apple Silicon, Ollama, and cloud models via OpenRouter.
 
 ## Features
 
 - **Auto-discovery** - Scans directories to find local models, LoRA adapters, and GGUF files
+- **OpenRouter integration** - Access hundreds of cloud models (GPT-4o, Claude, Gemini, etc.) through a single API key
+- **Context management** - Automatic token tracking, context window monitoring, and auto-trimming when conversations get long
 - **Model management** - Download, list, inspect, and remove models from the command line
 - **Hardware-matched recommendations** - Get model suggestions that fit your GPU/CPU/RAM via llmfit
 - **Persistent configuration** - YAML-based settings for device, format, and host preferences
@@ -194,6 +196,7 @@ froggy config set ollama_host http://localhost:11434
 | `device` | Inference device | `cpu`, `cuda`, `mps` |
 | `format` | Preferred model format | `auto`, `mlx`, `gguf`, `safetensors` |
 | `ollama_host` | Ollama server URL | `http://localhost:11434` |
+| `openrouter_api_key` | OpenRouter API key for cloud models | `sk-or-v1-...` |
 
 ## Chat Commands
 
@@ -205,6 +208,7 @@ froggy config set ollama_host http://localhost:11434
 | `/temp [value]` | Set or show temperature (0.0 - 2.0) |
 | `/tokens [value]` | Set or show max output tokens |
 | `/info` | Show current session settings |
+| `/context` | Show context window usage, token stats, and auto-trim history |
 | `/clear` | Clear conversation history |
 | `/quit` | Exit froggy |
 | `/tools` | List available tools and their active state |
@@ -267,6 +271,7 @@ Files starting with `_` are ignored. Broken files are skipped with a warning rat
 | `FROGGY_AUTORUN` | `0` | Set to `1` to auto-approve all tool calls |
 | `FROGGY_PROJECT_ROOT` | `""` | Project root used to locate the `tools/` plugin directory |
 | `FROGGY_MAX_TOOL_ROUNDS` | `5` | Maximum tool-call/response rounds per user message |
+| `OPENROUTER_API_KEY` | `""` | OpenRouter API key (alternative to `froggy config set openrouter_api_key`) |
 
 ```bash
 # Use a custom home directory
@@ -284,6 +289,7 @@ FROGGY_TOOLS=1 FROGGY_AUTORUN=1 froggy chat
 | Apple MLX | Working | SafeTensors (Apple Silicon only, requires `mlx-lm`) |
 | llama.cpp | Working | GGUF (requires `llama-cli` on PATH) |
 | Ollama | Working | Any model available on your Ollama server |
+| OpenRouter | Working | Any model on [OpenRouter](https://openrouter.ai/models) (cloud API, requires API key) |
 
 ### MLX Setup (Apple Silicon)
 
@@ -314,6 +320,55 @@ ollama pull llama3
 # Launch froggy — Ollama models appear automatically
 froggy chat
 ```
+
+### OpenRouter Setup (Cloud Models)
+
+[OpenRouter](https://openrouter.ai) gives you access to hundreds of cloud models (GPT-4o, Claude, Gemini, LLaMA, Mistral, and more) through a single API key — including free models.
+
+1. Get an API key at [openrouter.ai/keys](https://openrouter.ai/keys)
+2. Set it in froggy:
+
+```bash
+# Option A: save to froggy config (persistent)
+froggy config set openrouter_api_key sk-or-v1-...
+
+# Option B: set as environment variable
+export OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+3. Launch froggy — OpenRouter models appear in the selection menu:
+
+```bash
+froggy chat
+```
+
+OpenRouter models show up tagged with `[OpenRouter]` and their context window size. Free models have `:free` in their name (e.g. `openrouter/free`, `qwen/qwen3-next-80b-a3b-instruct:free`).
+
+## Context Management
+
+froggy automatically tracks token usage and manages the context window so long conversations don't silently overflow:
+
+- **Token tracking** — every message is counted against the model's context limit
+- **Auto-trimming** — when the conversation approaches the context limit, the oldest messages are dropped to make room, with a `[Earlier conversation trimmed]` marker so the model knows context was lost
+- **Response reserve** — 15% of the context window is reserved for the model's response, so you won't hit the limit mid-generation
+- **Model-aware limits** — context limits are detected automatically for known model families (GPT-4o: 128K, Claude: 200K, LLaMA: 8K, etc.) and from OpenRouter's API metadata
+
+Use the `/context` command during a chat session to see current usage:
+
+```
+/context
+╭──────────────── Context Window ─────────────────╮
+│ Context limit           200,000 tokens          │
+│ Available (after reserve) 170,000 tokens        │
+│ Current usage           1,234 tokens            │
+│ Utilization             1%                      │
+│ Messages                12                      │
+│ Auto-trims              0                       │
+│ Session usage           prompt: 8,432  ...      │
+╰─────────────────────────────────────────────────╯
+```
+
+The `/info` command also shows a compact context summary alongside other session settings.
 
 ## Project Structure
 

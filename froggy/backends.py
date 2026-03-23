@@ -458,6 +458,92 @@ class MLXBackend(Backend):
                 pass
 
 
+class OpenRouterBackend(Backend):
+    """Communicates with the OpenRouter API (OpenAI-compatible)."""
+
+    def __init__(self, api_key: str | None = None, base_url: str = "https://openrouter.ai/api/v1"):
+        import os
+        self.base_url = base_url
+        self._api_key_arg = api_key  # store explicitly passed key
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self._model_name: str | None = None
+        self._context_length: int | None = None
+
+    @property
+    def name(self) -> str:
+        return "openrouter"
+
+    def load(self, model_info: ModelInfo, device: str) -> None:
+        # If no key was found yet, try loading from config
+        if not self.api_key:
+            try:
+                from .config import get_config
+                self.api_key = get_config("openrouter_api_key", "") or ""
+            except Exception:
+                pass
+        if not self.api_key:
+            raise ValueError(
+                "OpenRouter API key not set. "
+                "Set OPENROUTER_API_KEY env var or run: froggy config set openrouter_api_key <key>"
+            )
+
+        self._model_name = model_info.name
+        self._context_length = getattr(model_info, "context_length", None)
+        console.print("  [dim]Provider:[/] OpenRouter")
+        console.print(f"  [dim]Model:[/] {self._model_name}")
+        if self._context_length:
+            console.print(f"  [dim]Context:[/] {self._context_length:,} tokens")
+        console.print("  [bold green]\u2714 Ready![/]")
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        if self._model_name is None:
+            raise RuntimeError("Backend not loaded — call load() first")
+
+        body = json.dumps({
+            "model": self._model_name,
+            "messages": messages,
+            "stream": True,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }).encode()
+
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://github.com/overtimepog/froggy",
+                "X-Title": "froggy",
+            },
+        )
+
+        with urllib.request.urlopen(req) as resp:
+            for line in resp:
+                line = line.decode("utf-8").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]  # strip "data: " prefix
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+    def unload(self) -> None:
+        self._model_name = None
+
+
 class OllamaBackend(Backend):
     """Communicates with a running Ollama server via its REST API."""
 
@@ -532,11 +618,14 @@ BACKENDS: dict[str, type[Backend]] = {
     "llama.cpp": LlamaCppBackend,
     "ollama": OllamaBackend,
     "mlx": MLXBackend,
+    "openrouter": OpenRouterBackend,
 }
 
 
 def pick_backend(model_info: ModelInfo) -> Backend:
     """Auto-select the best backend for a given model."""
+    if model_info.is_openrouter:
+        return OpenRouterBackend()
     if model_info.is_ollama:
         return OllamaBackend()
     if model_info.has_gguf:

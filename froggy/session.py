@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .backends import Backend
+from .context import ContextManager, context_limit_for_model, estimate_messages_tokens
 from .discovery import ModelInfo
 
 # ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ HELP_TEXT = """[bold]Commands:[/]
   [cyan]/tokens <value>[/]        Set max response tokens
   [cyan]/model[/]                 Switch to a different model
   [cyan]/info[/]                  Show current settings
+  [cyan]/context[/]               Show context window usage and token stats
   [cyan]/tools[/]                 List available tools
   [cyan]/tools on|off[/]          Enable or disable the tool system
   [cyan]/tools add <name>[/]      Activate a specific tool
@@ -161,6 +163,16 @@ class ChatSession:
         self.system_prompt: str = "You are a helpful assistant."
         self.temperature: float = 0.7
         self.max_tokens: int = 1024
+
+        # Context management
+        ctx_limit = context_limit_for_model(
+            model_info.name,
+            getattr(model_info, "context_length", None),
+        )
+        self.context_mgr = ContextManager(
+            context_limit=ctx_limit,
+            model=model_info.name,
+        )
 
         # Tool system state
         self.tools_enabled: bool = FROGGY_TOOLS and _TOOLS_AVAILABLE
@@ -245,6 +257,11 @@ class ChatSession:
             else:
                 # No tool calls (or tools disabled) — this is the final response.
                 self.messages.append({"role": "assistant", "content": response_text})
+
+                # Track token usage for this exchange
+                prompt_tokens = estimate_messages_tokens(self.messages, self.model_info.name)
+                completion_tokens = len(response_text) // 4  # rough estimate
+                self.context_mgr.usage.record(prompt_tokens, completion_tokens)
                 break
 
     def _generate_one_round(self) -> tuple[str, list]:
@@ -256,6 +273,11 @@ class ChatSession:
         full_messages = [
             {"role": "system", "content": self._build_system_prompt()}
         ] + self.messages
+
+        # Auto-trim context if approaching the limit
+        full_messages = self.context_mgr.trim_if_needed(full_messages)
+        # Sync back: messages is everything after the system prompt
+        self.messages = full_messages[1:]
 
         full_response: list[str] = []
         stopped = False
@@ -435,11 +457,32 @@ def handle_command(cmd: str, session: ChatSession) -> str | None:
         tbl.add_row("[dim]Temperature[/]", str(session.temperature))
         tbl.add_row("[dim]Max tokens[/]", str(session.max_tokens))
         tbl.add_row("[dim]History[/]", f"{len(session.messages)} messages")
+        ctx = session.context_mgr.status(
+            [{"role": "system", "content": session._build_system_prompt()}] + session.messages
+        )
+        tbl.add_row("[dim]Context[/]", f"{ctx['current_tokens']:,} / {ctx['available_tokens']:,} tokens ({ctx['utilization']:.0%})")
+        if ctx["trims"] > 0:
+            tbl.add_row("[dim]Auto-trims[/]", str(ctx["trims"]))
         if _TOOLS_AVAILABLE:
             tools_state = "enabled" if session.tools_enabled else "disabled"
             tbl.add_row("[dim]Tools[/]", tools_state)
             tbl.add_row("[dim]Autorun[/]", "on" if session.autorun else "off")
         console.print(Panel(tbl, title="Session Info", border_style="cyan"))
+    elif command == "/context":
+        ctx = session.context_mgr.status(
+            [{"role": "system", "content": session._build_system_prompt()}] + session.messages
+        )
+        tbl = Table(show_header=False, box=None, padding=(0, 2))
+        tbl.add_row("[dim]Context limit[/]", f"{ctx['context_limit']:,} tokens")
+        tbl.add_row("[dim]Available (after reserve)[/]", f"{ctx['available_tokens']:,} tokens")
+        tbl.add_row("[dim]Current usage[/]", f"{ctx['current_tokens']:,} tokens")
+        pct = ctx['utilization']
+        color = "green" if pct < 0.6 else "yellow" if pct < 0.85 else "red"
+        tbl.add_row("[dim]Utilization[/]", f"[{color}]{pct:.0%}[/]")
+        tbl.add_row("[dim]Messages[/]", str(ctx['messages']))
+        tbl.add_row("[dim]Auto-trims[/]", str(ctx['trims']))
+        tbl.add_row("[dim]Session usage[/]", ctx['usage'])
+        console.print(Panel(tbl, title="Context Window", border_style="cyan"))
     elif command == "/tools":
         _handle_tools_command(arg, session)
     elif command == "/autorun":

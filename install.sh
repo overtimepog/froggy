@@ -118,6 +118,39 @@ link_binary
 
 info "froggy installed successfully!"
 echo ""
+
+# ── optional: OpenRouter API key ─────────────────────────────────────────────
+
+echo "  ┌─────────────────────────────────────────────────────┐"
+echo "  │  Optional: connect to cloud models via OpenRouter   │"
+echo "  │  Get a free key at https://openrouter.ai/keys       │"
+echo "  └─────────────────────────────────────────────────────┘"
+echo ""
+
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+    # Key was passed as env var during install
+    "${VENV_DIR}/bin/python" -c "
+from froggy.config import set_config
+set_config('openrouter_api_key', '${OPENROUTER_API_KEY}')
+"
+    info "OpenRouter API key saved to config."
+else
+    printf '  Enter your OpenRouter API key (or press Enter to skip): '
+    read -r or_key
+    if [[ -n "$or_key" ]]; then
+        "${VENV_DIR}/bin/python" -c "
+from froggy.config import set_config
+import sys
+set_config('openrouter_api_key', sys.argv[1])
+" "$or_key"
+        info "OpenRouter API key saved to config."
+    else
+        echo "  Skipped — you can add it later with:"
+        echo "    froggy config set openrouter_api_key sk-or-v1-..."
+    fi
+fi
+
+echo ""
 echo "  Get started:"
 echo "    froggy --help              # see all commands"
 echo "    froggy download <model>    # grab a model from HuggingFace"

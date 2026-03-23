@@ -13,7 +13,7 @@ from rich.table import Table
 
 from .backends import pick_backend
 from .config import get_config, load_config, set_config
-from .discovery import ModelInfo, discover_models, discover_ollama_models
+from .discovery import ModelInfo, discover_models, discover_ollama_models, discover_openrouter_models
 from .download import download_model, list_variants
 from .llmfit import ensure_llmfit, llmfit_recommend
 from .models import list_models, model_info, remove_model
@@ -218,6 +218,12 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
     if ollama_models:
         console.print(f"[dim]Found {len(ollama_models)} model(s) on Ollama server[/]")
         models.extend(ollama_models)
+
+    # Also discover OpenRouter models if API key is available
+    openrouter_models = discover_openrouter_models()
+    if openrouter_models:
+        console.print(f"[dim]Found {len(openrouter_models)} model(s) on OpenRouter[/]")
+        models.extend(openrouter_models)
 
     if not models:
         console.print(f"[red]No models found in {models_dir}[/]")
