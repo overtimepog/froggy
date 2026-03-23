@@ -128,11 +128,12 @@ echo "  └───────────────────────
 echo ""
 
 if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-    # Key was passed as env var during install
+    # Key was passed as env var during install — pass via argv to avoid injection
     "${VENV_DIR}/bin/python" -c "
 from froggy.config import set_config
-set_config('openrouter_api_key', '${OPENROUTER_API_KEY}')
-"
+import sys
+set_config('openrouter_api_key', sys.argv[1])
+" "${OPENROUTER_API_KEY}"
     info "OpenRouter API key saved to config."
 else
     printf '  Enter your OpenRouter API key (or press Enter to skip): '

@@ -140,7 +140,7 @@ def discover_openrouter_models(
         try:
             from .config import get_config
             key = get_config("openrouter_api_key", "") or ""
-        except Exception:
+        except (ImportError, OSError, ValueError):
             pass
     if not key:
         return []

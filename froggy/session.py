@@ -90,6 +90,10 @@ HELP_TEXT = """[bold]Commands:[/]
   [cyan]/model[/]                 Switch to a different model
   [cyan]/info[/]                  Show current settings
   [cyan]/context[/]               Show context window usage and token stats
+  [cyan]/inject <path>[/]         Inject a file into the context window
+  [cyan]/eject <path>[/]          Remove an injected file from context
+  [cyan]/profile <name>[/]        Set context profile (minimal/standard/full)
+  [cyan]/fresh[/]                 Reset context (keep injected files, clear history)
   [cyan]/tools[/]                 List available tools
   [cyan]/tools on|off[/]          Enable or disable the tool system
   [cyan]/tools add <name>[/]      Activate a specific tool
@@ -198,12 +202,21 @@ class ChatSession:
         return self._registry
 
     def _build_system_prompt(self) -> str:
-        """Build the effective system prompt, injecting tool definitions when enabled."""
+        """Build the effective system prompt via the context manager.
+
+        Assembles: base prompt + tool instructions + injected files/blocks +
+        conversation summary.  The context manager controls what gets inlined
+        based on the active profile.
+        """
+        tool_block = None
         if self.tools_enabled and self._registry is not None:
             reg = self._get_active_registry()
             if reg is not None:
-                return self.system_prompt + "\n\n" + reg.system_prompt_block()
-        return self.system_prompt
+                tool_block = reg.system_prompt_block()
+
+        return self.context_mgr.build_system_context(
+            self.system_prompt, tool_block=tool_block
+        )
 
     def _sync_autorun(self) -> None:
         """Propagate autorun state to the executor's confirm_fn."""
@@ -259,8 +272,9 @@ class ChatSession:
                 self.messages.append({"role": "assistant", "content": response_text})
 
                 # Track token usage for this exchange
+                from .context import estimate_tokens
                 prompt_tokens = estimate_messages_tokens(self.messages, self.model_info.name)
-                completion_tokens = len(response_text) // 4  # rough estimate
+                completion_tokens = estimate_tokens(response_text, self.model_info.name)
                 self.context_mgr.usage.record(prompt_tokens, completion_tokens)
                 break
 
@@ -270,11 +284,11 @@ class ChatSession:
         Returns ``(response_text, tool_calls)`` where ``tool_calls`` is a
         (possibly empty) list of ``ToolCall`` objects extracted from the stream.
         """
+        # Auto-summarize old turns, then trim if still over budget
+        self.messages = self.context_mgr.maybe_summarize(self.messages)
         full_messages = [
             {"role": "system", "content": self._build_system_prompt()}
         ] + self.messages
-
-        # Auto-trim context if approaching the limit
         full_messages = self.context_mgr.trim_if_needed(full_messages)
         # Sync back: messages is everything after the system prompt
         self.messages = full_messages[1:]
@@ -285,6 +299,7 @@ class ChatSession:
 
         # Streaming tool-call parser — buffers chunks and detects tool calls.
         parser = None
+        streaming_calls: list = []
         if self.tools_enabled and _TOOLS_AVAILABLE and ToolCallParser is not None:
             parser = ToolCallParser()
 
@@ -305,7 +320,7 @@ class ChatSession:
 
                 # Feed chunk to the streaming tool-call buffer.
                 if parser is not None:
-                    parser.feed(chunk)
+                    streaming_calls.extend(parser.feed(chunk))
 
                 # Strip thinking blocks before display
                 display = strip_thinking(raw)
@@ -319,7 +334,7 @@ class ChatSession:
                     break
 
         # Collect any remaining tool calls that were buffered during streaming.
-        tool_calls: list = []
+        tool_calls: list = list(streaming_calls)
         if parser is not None:
             tool_calls.extend(parser.flush())
 
@@ -460,19 +475,24 @@ def handle_command(cmd: str, session: ChatSession) -> str | None:
         ctx = session.context_mgr.status(
             [{"role": "system", "content": session._build_system_prompt()}] + session.messages
         )
-        tbl.add_row("[dim]Context[/]", f"{ctx['current_tokens']:,} / {ctx['available_tokens']:,} tokens ({ctx['utilization']:.0%})")
-        if ctx["trims"] > 0:
-            tbl.add_row("[dim]Auto-trims[/]", str(ctx["trims"]))
+        pct = ctx['utilization']
+        color = "green" if pct < 0.6 else "yellow" if pct < 0.85 else "red"
+        tbl.add_row("[dim]Context[/]", f"[{color}]{ctx['current_tokens']:,} / {ctx['available_tokens']:,} tokens ({pct:.0%})[/]")
+        tbl.add_row("[dim]Profile[/]", ctx['profile'])
+        if ctx["injected_items"] > 0:
+            tbl.add_row("[dim]Injected[/]", f"{ctx['injected_items']} items ({ctx['injected_tokens']:,} tokens)")
+        if ctx["trims"] > 0 or ctx["summarizations"] > 0:
+            tbl.add_row("[dim]Compressions[/]", f"{ctx['summarizations']} summaries, {ctx['trims']} trims")
         if _TOOLS_AVAILABLE:
             tools_state = "enabled" if session.tools_enabled else "disabled"
             tbl.add_row("[dim]Tools[/]", tools_state)
             tbl.add_row("[dim]Autorun[/]", "on" if session.autorun else "off")
         console.print(Panel(tbl, title="Session Info", border_style="cyan"))
     elif command == "/context":
-        ctx = session.context_mgr.status(
-            [{"role": "system", "content": session._build_system_prompt()}] + session.messages
-        )
+        full_msgs = [{"role": "system", "content": session._build_system_prompt()}] + session.messages
+        ctx = session.context_mgr.status(full_msgs)
         tbl = Table(show_header=False, box=None, padding=(0, 2))
+        tbl.add_row("[dim]Profile[/]", ctx['profile'])
         tbl.add_row("[dim]Context limit[/]", f"{ctx['context_limit']:,} tokens")
         tbl.add_row("[dim]Available (after reserve)[/]", f"{ctx['available_tokens']:,} tokens")
         tbl.add_row("[dim]Current usage[/]", f"{ctx['current_tokens']:,} tokens")
@@ -480,9 +500,54 @@ def handle_command(cmd: str, session: ChatSession) -> str | None:
         color = "green" if pct < 0.6 else "yellow" if pct < 0.85 else "red"
         tbl.add_row("[dim]Utilization[/]", f"[{color}]{pct:.0%}[/]")
         tbl.add_row("[dim]Messages[/]", str(ctx['messages']))
+        tbl.add_row("[dim]Injected items[/]", f"{ctx['injected_items']} ({ctx['injected_tokens']:,} tokens)")
+        tbl.add_row("[dim]Summarizations[/]", str(ctx['summarizations']))
         tbl.add_row("[dim]Auto-trims[/]", str(ctx['trims']))
+        tbl.add_row("[dim]Has summary[/]", "yes" if ctx['has_summary'] else "no")
         tbl.add_row("[dim]Session usage[/]", ctx['usage'])
+        # List injected items
+        injected = session.context_mgr.list_injected()
+        if injected:
+            tbl.add_row("", "")
+            for name, tokens in injected.items():
+                tbl.add_row(f"  [dim]{name}[/]", f"{tokens:,} tokens")
         console.print(Panel(tbl, title="Context Window", border_style="cyan"))
+    elif command == "/inject":
+        if not arg:
+            console.print("[red]Usage: /inject <file_path>[/]")
+        else:
+            ok = session.context_mgr.inject_file(arg.strip())
+            if ok:
+                tokens = session.context_mgr.list_injected().get(f"[file] {arg.strip()}", 0)
+                console.print(f"[dim]Injected:[/] {arg.strip()} [dim]({tokens:,} tokens)[/]")
+            else:
+                console.print(f"[red]Could not read:[/] {arg.strip()}")
+    elif command == "/eject":
+        if not arg:
+            console.print("[red]Usage: /eject <file_path>[/]")
+        else:
+            ok = session.context_mgr.remove_file(arg.strip())
+            if ok:
+                console.print(f"[dim]Ejected:[/] {arg.strip()}")
+            else:
+                console.print(f"[dim]Not found in context:[/] {arg.strip()}")
+    elif command == "/profile":
+        if not arg:
+            console.print(f"[dim]Current profile:[/] {session.context_mgr.profile_name}")
+            from .context import PROFILES
+            for name, p in PROFILES.items():
+                marker = " [bold cyan]← active[/]" if name == session.context_mgr.profile_name else ""
+                console.print(f"  [cyan]{name}[/] — {p['description']}{marker}")
+        else:
+            ok = session.context_mgr.set_profile(arg.strip())
+            if ok:
+                console.print(f"[dim]Profile set to:[/] {arg.strip()}")
+            else:
+                console.print(f"[red]Unknown profile:[/] {arg.strip()} [dim](minimal/standard/full)[/]")
+    elif command == "/fresh":
+        session.context_mgr.fresh_context()
+        session.messages.clear()
+        console.print("[dim]Context reset — injected files preserved, history cleared.[/]")
     elif command == "/tools":
         _handle_tools_command(arg, session)
     elif command == "/autorun":

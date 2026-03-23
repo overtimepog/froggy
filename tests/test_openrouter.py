@@ -15,11 +15,8 @@ class TestOpenRouterBackend:
         backend = OpenRouterBackend(api_key="test-key")
         assert backend.name == "openrouter"
 
-    @patch.dict("os.environ", {}, clear=False)
-    def test_load_without_api_key(self):
-        # Remove env var if set
-        import os
-        os.environ.pop("OPENROUTER_API_KEY", None)
+    def test_load_without_api_key(self, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         backend = OpenRouterBackend(api_key="")
         model = ModelInfo(
             name="openai/gpt-4o",
@@ -150,15 +147,12 @@ class TestDiscoverOpenRouterModels:
         assert models[0].context_length == 128000
         assert models[1].name == "anthropic/claude-3-opus"
 
-    def test_discover_no_api_key(self):
+    def test_discover_no_api_key(self, monkeypatch):
         """Should return empty list when no API key."""
-        import os
-        env = os.environ.copy()
-        env.pop("OPENROUTER_API_KEY", None)
-        with patch.dict("os.environ", env, clear=True):
-            with patch("froggy.config.get_config", return_value=""):
-                models = discover_openrouter_models(api_key="")
-                assert models == []
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("froggy.config.get_config", return_value=""):
+            models = discover_openrouter_models(api_key="")
+            assert models == []
 
     @patch("urllib.request.urlopen")
     def test_discover_network_error(self, mock_urlopen):

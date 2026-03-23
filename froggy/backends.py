@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -479,7 +480,7 @@ class OpenRouterBackend(Backend):
             try:
                 from .config import get_config
                 self.api_key = get_config("openrouter_api_key", "") or ""
-            except Exception:
+            except (ImportError, OSError, ValueError):
                 pass
         if not self.api_key:
             raise ValueError(
@@ -523,7 +524,21 @@ class OpenRouterBackend(Backend):
             },
         )
 
-        with urllib.request.urlopen(req) as resp:
+        try:
+            resp_ctx = urllib.request.urlopen(req, timeout=120)
+        except urllib.error.HTTPError as e:
+            error_body = ""
+            try:
+                error_body = e.read().decode("utf-8", errors="replace")
+                error_data = json.loads(error_body)
+                error_msg = error_data.get("error", {}).get("message", error_body[:200])
+            except Exception:
+                error_msg = error_body[:200] or str(e)
+            raise RuntimeError(
+                f"OpenRouter API error {e.code}: {error_msg}"
+            ) from e
+
+        with resp_ctx as resp:
             for line in resp:
                 line = line.decode("utf-8").strip()
                 if not line or not line.startswith("data: "):
