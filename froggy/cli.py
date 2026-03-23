@@ -378,6 +378,10 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
                 if not user_input.strip():
                     continue
 
+                # /continue — ask model to keep going from where it stopped
+                if user_input.strip().lower() in ("/continue", "/c"):
+                    user_input = "Continue from where you left off. Do not repeat what you already said."
+
                 if user_input.strip().startswith("/"):
                     result = handle_command(user_input.strip(), session)
                     if result == "quit":
@@ -394,7 +398,7 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
                 except KeyboardInterrupt:
                     console.print("\n[dim]Generation interrupted.[/]")
                 except Exception as e:
-                    console.print(f"[red]Error during generation:[/] {e}")
+                    console.print(f"[red]Error:[/] {e}")
 
         except KeyboardInterrupt:
             backend.unload()

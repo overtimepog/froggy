@@ -91,6 +91,7 @@ HELP_TEXT = """[bold]Commands:[/]
   [cyan]/help[/]                  Show this help
   [cyan]/quit[/]                  Exit
   [cyan]/clear[/]                 Clear chat history
+  [cyan]/continue[/]              Continue from where the model left off
   [cyan]/system <prompt>[/]       Set system prompt
   [cyan]/temp <value>[/]          Set temperature (0.0 - 2.0)
   [cyan]/tokens <value>[/]        Set max response tokens
@@ -173,7 +174,11 @@ class ChatSession:
         self.messages: list[dict] = []
         self.system_prompt: str = AGENT_SYSTEM_PROMPT
         self.temperature: float = 0.7
-        self.max_tokens: int = 1024
+        # Default max_tokens: higher for cloud models with large context windows
+        if getattr(model_info, "is_openrouter", False):
+            self.max_tokens: int = 4096
+        else:
+            self.max_tokens: int = 1024
 
         # Context management
         ctx_limit = context_limit_for_model(
@@ -380,6 +385,14 @@ class ChatSession:
             stats_parts.append(f"{tps:.1f} tok/s")
             stats_parts.append(f"{elapsed:.1f}s")
             console.print(f"[dim]  {' · '.join(stats_parts)}[/]")
+
+        # Detect likely truncation (hit max_tokens without a natural ending)
+        raw_text = "".join(full_response).strip()
+        if token_count >= self.max_tokens - 5 and raw_text and raw_text[-1] not in ".!?)\n`\"'":
+            console.print(
+                f"[yellow]  ⚠ Response may be truncated (hit {self.max_tokens} token limit). "
+                f"Use /tokens {self.max_tokens * 2} to increase.[/]"
+            )
 
         # Collect any remaining tool calls that were buffered during streaming.
         tool_calls: list = list(streaming_calls)
