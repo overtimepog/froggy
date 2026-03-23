@@ -37,19 +37,15 @@ BANNER = r"""[bold green]
  |  _| | | (_) | (_| | (_| | |_| |
  |_| |_|  \___/ \__, |\__, |\__, |
                  |___/ |___/ |___/[/]
-[dim]Chat with your local models[/]"""
+[dim]A tiny agent harness for any model[/]"""
 
 
 def select_model(models: list[ModelInfo]) -> ModelInfo | None:
     """Interactive model selection with search when the list is large."""
-    from .saved_models import get_saved_models
-    saved_names = {m.get("name", "") for m in get_saved_models()}
-
-    # If more than 20 models, offer search first
+    # This is only called when there are no saved models, or from the
+    # "Browse all models" path. Simple search + pick.
     if len(models) > 20:
         console.print(f"\n[dim]{len(models)} models available.[/]")
-        if saved_names:
-            console.print(f"[dim]Your {len(saved_names)} saved model(s) are listed first.[/]")
         console.print("[dim]Type a search term to filter, or press Enter to see all.[/]\n")
         try:
             query = Prompt.ask("[bold]Search models[/]", default="")
@@ -74,10 +70,7 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
     tbl.add_column("Type", style="dim")
 
     for i, m in enumerate(filtered, 1):
-        label = m.label
-        if m.name in saved_names:
-            label = f"⭐ {label}"
-        tbl.add_row(str(i), label, m.model_type)
+        tbl.add_row(str(i), m.label, m.model_type)
 
     console.print()
     console.print(tbl)
@@ -91,6 +84,46 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
         return filtered[choice - 1]
     except (KeyboardInterrupt, EOFError):
         return None
+
+
+def select_from_saved_or_browse(
+    saved: list[ModelInfo],
+    all_models: list[ModelInfo],
+) -> ModelInfo | None:
+    """Show saved models as a short menu with a 'Browse all' option at the end."""
+    tbl = Table(title="Your Models", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("#", style="bold", width=4)
+    tbl.add_column("Name")
+    tbl.add_column("Type", style="dim")
+
+    for i, m in enumerate(saved, 1):
+        tbl.add_row(str(i), f"⭐ {m.label}", m.model_type)
+
+    browse_idx = len(saved) + 1
+    other_count = len(all_models)
+    tbl.add_row(
+        str(browse_idx),
+        f"[dim]Browse all models ({other_count} available)...[/]",
+        "",
+    )
+
+    console.print()
+    console.print(tbl)
+    console.print()
+
+    try:
+        choice = IntPrompt.ask(
+            "[bold]Select a model[/]",
+            choices=[str(i) for i in range(1, browse_idx + 1)],
+        )
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+    if choice == browse_idx:
+        # User wants to browse the full catalog
+        return select_model(all_models)
+
+    return saved[choice - 1]
 
 
 def _build_tool_system(tools_dir: Path | None):
@@ -126,7 +159,7 @@ def _build_tool_system(tools_dir: Path | None):
 @click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx):
-    """Chat with local HuggingFace models in your terminal."""
+    """A tiny agent harness for any model."""
     if ctx.invoked_subcommand is None:
         ctx.invoke(chat)
 
@@ -245,41 +278,49 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
 
     # Start with saved/favorited models
     from .saved_models import saved_models_as_model_info
-    models = saved_models_as_model_info()
-    if models:
-        console.print(f"[dim]Loaded {len(models)} saved model(s)[/]")
+    saved_infos = saved_models_as_model_info()
+    if saved_infos:
+        console.print(f"[dim]Loaded {len(saved_infos)} saved model(s)[/]")
 
-    # Also discover local models
+    # Discover all other models in the background
+    all_models: list[ModelInfo] = []
+
     local_models = discover_models(models_dir)
     if local_models:
-        models.extend(local_models)
+        all_models.extend(local_models)
 
-    # Also discover Ollama models if server is running
     ollama_models = discover_ollama_models()
     if ollama_models:
         console.print(f"[dim]Found {len(ollama_models)} model(s) on Ollama server[/]")
-        # Don't duplicate models already in saved list
-        saved_names = {m.name for m in models}
-        models.extend(m for m in ollama_models if m.name not in saved_names)
+        all_models.extend(ollama_models)
 
-    # Also discover OpenRouter models if API key is available
     openrouter_models = discover_openrouter_models()
     if openrouter_models:
         console.print(f"[dim]Found {len(openrouter_models)} model(s) on OpenRouter[/]")
-        saved_names = {m.name for m in models}
-        models.extend(m for m in openrouter_models if m.name not in saved_names)
+        all_models.extend(openrouter_models)
 
-    if not models:
-        console.print(f"[red]No models found in {models_dir}[/]")
-        console.print("[dim]Models need a config.json and weight files in their directory,[/]")
-        console.print("[dim]or start an Ollama server (ollama serve).[/]")
+    # Dedup: remove from all_models anything already in saved_infos
+    saved_names = {m.name for m in saved_infos}
+    all_models = [m for m in all_models if m.name not in saved_names]
+
+    if not saved_infos and not all_models:
+        console.print("[red]No models found.[/]")
+        console.print("[dim]Use [cyan]froggy add <model>[/dim][cyan][/] to add a model, or set up a backend:[/]")
+        console.print("[dim]  • OpenRouter: froggy config set openrouter_api_key <key>[/]")
+        console.print("[dim]  • Ollama: ollama serve[/]")
+        console.print("[dim]  • Local: froggy download <huggingface-repo>[/]")
         sys.exit(1)
 
     # Build tool system once (shared across model switches within a session)
     tool_registry, tool_executor = _build_tool_system(tools_dir)
 
     while True:
-        selected_model = select_model(models)
+        if saved_infos:
+            selected_model = select_from_saved_or_browse(saved_infos, all_models)
+        elif all_models:
+            selected_model = select_model(all_models)
+        else:
+            break
         if selected_model is None:
             break
 
