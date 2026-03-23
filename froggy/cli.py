@@ -1,6 +1,7 @@
 """CLI entry point and main loop."""
 
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,12 +13,13 @@ from rich.prompt import IntPrompt, Prompt
 from rich.table import Table
 
 from .backends import pick_backend
-from .config import get_config, load_config, set_config
+from .config import get_config, load_config, save_config, set_config
 from .discovery import ModelInfo, discover_models, discover_ollama_models, discover_openrouter_models
 from .download import download_model, list_variants
 from .llmfit import ensure_llmfit, llmfit_recommend
 from .models import list_models, model_info, remove_model
 from .paths import models_dir
+from .saved_models import add_saved_model, get_saved_models, parse_model_source, remove_saved_model
 from .session import (
     _TOOLS_AVAILABLE,
     FROGGY_PROJECT_ROOT,
@@ -39,13 +41,43 @@ BANNER = r"""[bold green]
 
 
 def select_model(models: list[ModelInfo]) -> ModelInfo | None:
+    """Interactive model selection with search when the list is large."""
+    from .saved_models import get_saved_models
+    saved_names = {m.get("name", "") for m in get_saved_models()}
+
+    # If more than 20 models, offer search first
+    if len(models) > 20:
+        console.print(f"\n[dim]{len(models)} models available.[/]")
+        if saved_names:
+            console.print(f"[dim]Your {len(saved_names)} saved model(s) are listed first.[/]")
+        console.print("[dim]Type a search term to filter, or press Enter to see all.[/]\n")
+        try:
+            query = Prompt.ask("[bold]Search models[/]", default="")
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+        if query.strip():
+            filtered = [m for m in models if query.lower() in m.name.lower() or query.lower() in m.model_type.lower()]
+            if not filtered:
+                console.print(f"[yellow]No models matching '{query}'.[/] Showing all.")
+                filtered = models
+            else:
+                console.print(f"[dim]Found {len(filtered)} match(es).[/]")
+        else:
+            filtered = models
+    else:
+        filtered = models
+
     tbl = Table(title="Available Models", border_style="cyan", title_style="bold cyan")
-    tbl.add_column("#", style="bold", width=3)
+    tbl.add_column("#", style="bold", width=4)
     tbl.add_column("Name")
     tbl.add_column("Type", style="dim")
 
-    for i, m in enumerate(models, 1):
-        tbl.add_row(str(i), m.label, m.model_type)
+    for i, m in enumerate(filtered, 1):
+        label = m.label
+        if m.name in saved_names:
+            label = f"⭐ {label}"
+        tbl.add_row(str(i), label, m.model_type)
 
     console.print()
     console.print(tbl)
@@ -54,9 +86,9 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
     try:
         choice = IntPrompt.ask(
             "[bold]Select a model[/]",
-            choices=[str(i) for i in range(1, len(models) + 1)],
+            choices=[str(i) for i in range(1, len(filtered) + 1)],
         )
-        return models[choice - 1]
+        return filtered[choice - 1]
     except (KeyboardInterrupt, EOFError):
         return None
 
@@ -211,19 +243,31 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
 
     console.print(Panel(BANNER, border_style="green", padding=(0, 2)))
 
-    models = discover_models(models_dir)
+    # Start with saved/favorited models
+    from .saved_models import saved_models_as_model_info
+    models = saved_models_as_model_info()
+    if models:
+        console.print(f"[dim]Loaded {len(models)} saved model(s)[/]")
+
+    # Also discover local models
+    local_models = discover_models(models_dir)
+    if local_models:
+        models.extend(local_models)
 
     # Also discover Ollama models if server is running
     ollama_models = discover_ollama_models()
     if ollama_models:
         console.print(f"[dim]Found {len(ollama_models)} model(s) on Ollama server[/]")
-        models.extend(ollama_models)
+        # Don't duplicate models already in saved list
+        saved_names = {m.name for m in models}
+        models.extend(m for m in ollama_models if m.name not in saved_names)
 
     # Also discover OpenRouter models if API key is available
     openrouter_models = discover_openrouter_models()
     if openrouter_models:
         console.print(f"[dim]Found {len(openrouter_models)} model(s) on OpenRouter[/]")
-        models.extend(openrouter_models)
+        saved_names = {m.name for m in models}
+        models.extend(m for m in openrouter_models if m.name not in saved_names)
 
     if not models:
         console.print(f"[red]No models found in {models_dir}[/]")
@@ -465,3 +509,170 @@ def config_set(key, value):
     """Set a config value."""
     set_config(key, value)
     click.echo(f"Set {key} = {value}")
+
+
+# ---------------------------------------------------------------------------
+# Model management: froggy add / froggy models
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.argument("source")
+def add(source):
+    """Add a model to your saved list.
+
+    SOURCE can be any of:
+      - OpenRouter model ID: openai/gpt-4o
+      - OpenRouter URL: https://openrouter.ai/models/openai/gpt-4o
+      - HuggingFace repo: mlx-community/Llama-3-8B-4bit
+      - HuggingFace URL: https://huggingface.co/TheBloke/Mistral-7B-GGUF
+      - Ollama model: ollama:llama3
+      - Bare name: llama3 (searches all platforms)
+    """
+    from .saved_models import discover_variants
+
+    try:
+        record = parse_model_source(source)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    # If the source was explicit (URL or org/model), check for variants
+    # If it's a bare name or "auto", search across platforms
+    if record["source"] == "auto" or record.get("_search"):
+        # Bare name — search everywhere
+        console.print(f"[cyan]Searching for[/] '{source}' [cyan]across platforms...[/]")
+        variants = discover_variants(source)
+    else:
+        # Explicit source — still search for variants on that platform + others
+        console.print(f"[cyan]Searching for variants of[/] '{record['name']}'...")
+        # Extract a search term: use the model name part (after the org/)
+        search_term = record["name"].split("/")[-1] if "/" in record["name"] else record["name"]
+        # Remove common suffixes for broader search
+        search_term = re.sub(r"[-:](free|instruct|chat|thinking|preview)$", "", search_term, flags=re.IGNORECASE)
+        variants = discover_variants(search_term)
+
+    if not variants:
+        # No variants found — just add the parsed record directly
+        console.print("[dim]No variants found. Adding as-is.[/]")
+        ok = add_saved_model(record)
+        if ok:
+            console.print(f"[green]✓[/] Added [bold]{record['name']}[/] ({record['source']})")
+        else:
+            console.print(f"[yellow]Already saved:[/] {record['name']}")
+        return
+
+    # Show variant picker
+    tbl = Table(title=f"Variants for '{source}'", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("#", style="bold", width=4)
+    tbl.add_column("Model", min_width=30)
+    tbl.add_column("Platform", style="dim", width=12)
+    tbl.add_column("Details", style="dim")
+    tbl.add_column("Pricing", style="dim", width=15)
+
+    for i, v in enumerate(variants, 1):
+        tbl.add_row(
+            str(i),
+            v["name"],
+            v["source"],
+            v.get("description", ""),
+            v.get("pricing", ""),
+        )
+
+    console.print()
+    console.print(tbl)
+    console.print()
+    console.print("[dim]Enter number(s) to add (e.g. 1,3,5), 'all' for all, or 'q' to cancel.[/]")
+
+    try:
+        choice = Prompt.ask("[bold]Add which[/]", default="1")
+    except (KeyboardInterrupt, EOFError):
+        return
+
+    if choice.strip().lower() == "q":
+        return
+
+    if choice.strip().lower() == "all":
+        indices = list(range(len(variants)))
+    else:
+        indices = []
+        for part in choice.split(","):
+            part = part.strip()
+            try:
+                idx = int(part) - 1
+                if 0 <= idx < len(variants):
+                    indices.append(idx)
+            except ValueError:
+                pass
+
+    if not indices:
+        console.print("[red]No valid selections.[/]")
+        return
+
+    added = 0
+    for idx in indices:
+        v = variants[idx]
+        rec = {
+            "name": v["name"],
+            "source": v["source"],
+            "original": source,
+        }
+        if v.get("context_length"):
+            rec["context_length"] = v["context_length"]
+        if add_saved_model(rec):
+            console.print(f"  [green]✓[/] {v['name']} ({v['source']})")
+            added += 1
+        else:
+            console.print(f"  [dim]Already saved:[/] {v['name']}")
+
+    console.print(f"\n[bold]{added}[/] model(s) added.")
+
+
+@cli.group(name="models", invoke_without_command=True)
+@click.pass_context
+def models_cmd(ctx):
+    """Manage your saved model list."""
+    if ctx.invoked_subcommand is not None:
+        return
+    # Bare `froggy models` — show saved models
+    saved = get_saved_models()
+    if not saved:
+        console.print("[dim]No saved models. Use[/] [cyan]froggy add <model>[/] [dim]to add one.[/]")
+        return
+
+    tbl = Table(title="Saved Models", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("#", style="bold", width=4)
+    tbl.add_column("Name", min_width=30)
+    tbl.add_column("Platform", style="dim", width=12)
+
+    for i, m in enumerate(saved, 1):
+        tbl.add_row(str(i), m.get("name", "?"), m.get("source", "?"))
+
+    console.print(tbl)
+    console.print(f"\n[dim]{len(saved)} saved model(s). These appear first when you run[/] [cyan]froggy chat[/].")
+
+
+@models_cmd.command("remove")
+@click.argument("name")
+def models_remove(name):
+    """Remove a model from your saved list."""
+    ok = remove_saved_model(name)
+    if ok:
+        console.print(f"[green]✓[/] Removed models matching '{name}'.")
+    else:
+        console.print(f"[red]No saved model matching:[/] {name}")
+
+
+@models_cmd.command("clear")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
+def models_clear(yes):
+    """Remove all saved models."""
+    saved = get_saved_models()
+    if not saved:
+        console.print("[dim]No saved models to clear.[/]")
+        return
+    if not yes:
+        click.confirm(f"Remove all {len(saved)} saved models?", abort=True)
+    cfg = load_config()
+    cfg["models"] = []
+    save_config(cfg)
+    console.print(f"[green]✓[/] Cleared {len(saved)} saved model(s).")
