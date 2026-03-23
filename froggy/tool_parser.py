@@ -71,6 +71,7 @@ class ToolCallParser:
 
 
 def _try_parse_json(text: str, raw: str) -> ToolCall | None:
+    # First try direct parse
     try:
         data = json.loads(text)
         if isinstance(data, dict) and "name" in data:
@@ -81,6 +82,24 @@ def _try_parse_json(text: str, raw: str) -> ToolCall | None:
             )
     except (json.JSONDecodeError, TypeError):
         pass
+
+    # Fallback: try to extract a JSON object from noisy text
+    # Models sometimes add trailing brackets, whitespace, or other junk
+    start = text.find("{")
+    if start >= 0:
+        obj_text, _ = _extract_json_object(text, start)
+        if obj_text is not None:
+            try:
+                data = json.loads(obj_text)
+                if isinstance(data, dict) and "name" in data:
+                    return ToolCall(
+                        name=data["name"],
+                        arguments=data.get("arguments", {}),
+                        raw=raw,
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     return None
 
 

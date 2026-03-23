@@ -143,8 +143,9 @@ def build_tool_instructions(tool_block: str, include_examples: bool = True) -> s
     instructions = (
         "# Tool Use Instructions\n\n"
         "You have tools available. To call a tool, output EXACTLY this format:\n\n"
-        '<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>\n\n'
+        '<tool_call>{"name": "TOOL_NAME_HERE", "arguments": {"param": "value"}}</tool_call>\n\n'
         "Rules:\n"
+        "- Replace TOOL_NAME_HERE with the actual tool name from the list below\n"
         "- Output the <tool_call> tag with valid JSON inside — no other format\n"
         "- Wait for the <tool_response> before continuing\n"
         "- You can call multiple tools in sequence across turns\n"
@@ -154,14 +155,14 @@ def build_tool_instructions(tool_block: str, include_examples: bool = True) -> s
 
     if include_examples:
         instructions += (
-            "## Examples\n\n"
-            "Reading a file:\n"
+            "## Format Examples (do NOT call these — they show the format only)\n\n"
+            "Example of reading a file:\n"
             '<tool_call>{"name": "read_file", "arguments": {"path": "src/main.py"}}</tool_call>\n\n'
-            "Running a shell command:\n"
+            "Example of running a shell command:\n"
             '<tool_call>{"name": "run_shell", "arguments": {"cmd": "ls -la"}}</tool_call>\n\n'
-            "Searching the web:\n"
+            "Example of searching the web:\n"
             '<tool_call>{"name": "web_search", "arguments": {"query": "python asyncio tutorial"}}</tool_call>\n\n'
-            "Running Python code:\n"
+            "Example of running Python code:\n"
             '<tool_call>{"name": "python_eval", "arguments": {"code": "import math; math.factorial(10)"}}</tool_call>\n\n'
         )
 
