@@ -42,6 +42,40 @@ _GEMINI_FC_RE = re.compile(
     re.DOTALL,
 )
 
+# Mistral: [TOOL_CALLS] followed by JSON array
+_MISTRAL_RE = re.compile(
+    r"\[TOOL_CALLS\]\s*(\[.*?\])",
+    re.DOTALL,
+)
+
+# Llama 3.x: <|python_tag|> followed by JSON (greedy to end of content)
+_LLAMA_TAG_RE = re.compile(
+    r"<\|python_tag\|>\s*",
+)
+
+# DeepSeek: <｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>
+# Uses fullwidth/special unicode chars
+_DEEPSEEK_BLOCK_RE = re.compile(
+    r"<[｜\|]tool[\u2581▁_\s]calls[\u2581▁_\s]begin[｜\|]>(.*?)<[｜\|]tool[\u2581▁_\s]calls[\u2581▁_\s]end[｜\|]>",
+    re.DOTALL,
+)
+_DEEPSEEK_CALL_RE = re.compile(
+    r"<[｜\|]tool[\u2581▁_\s]call[\u2581▁_\s]begin[｜\|]>[\s]*(\w+)\s*\n(.*?)<[｜\|]tool[\u2581▁_\s]call[\u2581▁_\s]end[｜\|]>",
+    re.DOTALL,
+)
+
+# Functionary/MeetKai: >>>tool_name\n{"arg": "val"}
+_FUNCTIONARY_RE = re.compile(
+    r">>>(\w+)\s*\n\s*(\{.*?\})",
+    re.DOTALL,
+)
+
+# Cohere Command R: Action: ```json\n[{"tool_name": ..., "parameters": {...}}]\n```
+_COHERE_RE = re.compile(
+    r"Action:\s*```(?:json)?\s*(\[.*?\])\s*```",
+    re.DOTALL,
+)
+
 
 @dataclass
 class ToolCall:
@@ -149,10 +183,101 @@ class ToolCallParser:
             calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
             remaining = remaining[: m.start()] + remaining[m.end() :]
 
-        # --- Bare JSON fallback (only when no partial XML tag is open) ---
+        # --- Mistral: [TOOL_CALLS] [{"name": ..., "arguments": {...}}] ---
+        while True:
+            m = _MISTRAL_RE.search(remaining)
+            if not m:
+                break
+            try:
+                arr = json.loads(m.group(1))
+                if isinstance(arr, list):
+                    for item in arr:
+                        if isinstance(item, dict) and "name" in item:
+                            calls.append(ToolCall(
+                                name=item["name"],
+                                arguments=item.get("arguments", item.get("parameters", {})),
+                                raw=m.group(0),
+                            ))
+            except json.JSONDecodeError:
+                pass
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Llama 3.x: <|python_tag|> {"name": ..., "parameters": {...}} ---
+        while True:
+            m = _LLAMA_TAG_RE.search(remaining)
+            if not m:
+                break
+            # Extract JSON object starting after the tag
+            after = remaining[m.end():]
+            obj_text, end_pos = _extract_json_object(after, 0) if after.lstrip().startswith("{") else (None, -1)
+            if obj_text is not None:
+                try:
+                    data = json.loads(obj_text)
+                    if isinstance(data, dict) and "name" in data:
+                        calls.append(ToolCall(
+                            name=data["name"],
+                            arguments=data.get("parameters", data.get("arguments", {})),
+                            raw=remaining[m.start():m.end() + end_pos],
+                        ))
+                except json.JSONDecodeError:
+                    pass
+                remaining = remaining[:m.start()] + after[end_pos:]
+            else:
+                remaining = remaining[:m.start()] + after
+
+        # --- DeepSeek: <｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜> ---
+        while True:
+            m = _DEEPSEEK_BLOCK_RE.search(remaining)
+            if not m:
+                break
+            inner = m.group(1)
+            for cm in _DEEPSEEK_CALL_RE.finditer(inner):
+                func_name = cm.group(1)
+                body = cm.group(2).strip()
+                try:
+                    args = json.loads(body)
+                except json.JSONDecodeError:
+                    args = {}
+                calls.append(ToolCall(name=func_name, arguments=args, raw=cm.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Functionary/MeetKai: >>>func_name\n{"arg": "val"} ---
+        while True:
+            m = _FUNCTIONARY_RE.search(remaining)
+            if not m:
+                break
+            func_name = m.group(1)
+            try:
+                args = json.loads(m.group(2))
+            except json.JSONDecodeError:
+                args = {}
+            calls.append(ToolCall(name=func_name, arguments=args, raw=m.group(0)))
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Cohere Command R: Action: ```json [...] ``` ---
+        while True:
+            m = _COHERE_RE.search(remaining)
+            if not m:
+                break
+            try:
+                arr = json.loads(m.group(1))
+                if isinstance(arr, list):
+                    for item in arr:
+                        if isinstance(item, dict):
+                            name = item.get("tool_name", item.get("name", ""))
+                            args = item.get("parameters", item.get("arguments", {}))
+                            if name:
+                                calls.append(ToolCall(name=name, arguments=args, raw=m.group(0)))
+            except json.JSONDecodeError:
+                pass
+            remaining = remaining[: m.start()] + remaining[m.end() :]
+
+        # --- Bare JSON fallback (only when no partial tag is open) ---
         if ("<tool_call>" not in remaining and "<function=" not in remaining
                 and "<|tool_call_start|>" not in remaining
-                and "<function_calls>" not in remaining):
+                and "<function_calls>" not in remaining
+                and "[TOOL_CALLS]" not in remaining
+                and "<|python_tag|>" not in remaining):
             parsed, remaining = _extract_bare_json_calls(remaining)
             calls.extend(parsed)
 
