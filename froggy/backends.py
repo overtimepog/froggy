@@ -464,10 +464,56 @@ class OllamaBackend(Backend):
     def __init__(self, base_url: str = "http://localhost:11434"):
         self.base_url = base_url
         self._model_name: str | None = None
+        self._model_size_gb: float = 0.0
+        self._num_ctx: int = 8192  # sensible default, auto-tuned on load
 
     @property
     def name(self) -> str:
         return "ollama"
+
+    def _get_system_memory_gb(self) -> float:
+        """Get total system memory in GB."""
+        try:
+            import platform
+            if platform.system() == "Darwin":
+                import subprocess
+                result = subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                return int(result.stdout.strip()) / (1024 ** 3)
+        except Exception:
+            pass
+        return 0.0
+
+    def _auto_tune_context(self, model_size_gb: float) -> int:
+        """Pick the largest context window that fits comfortably in memory.
+
+        On Apple Silicon unified memory, the model weights, KV cache, and OS
+        all share the same RAM pool.  A 27B Q4_K_M (~16 GB) on a 32 GB machine
+        leaves ~16 GB for KV cache + OS.  Each context token costs roughly
+        0.5-1 MB for a 27B model, so 8192 ctx ≈ 4-8 GB — comfortably fits
+        without swap thrashing.
+        """
+        total_ram = self._get_system_memory_gb()
+        if total_ram <= 0:
+            return 8192  # safe fallback
+
+        headroom = total_ram - model_size_gb - 4.0  # 4 GB for OS + apps
+        if headroom <= 0:
+            return 2048  # extreme memory pressure
+
+        # Rough KV cache estimate: ~0.5 MB per token with q8_0 KV cache for 27B
+        # (regular fp16 KV is ~0.8 MB/tok, q8_0 halves it)
+        mb_per_token = 0.5 if model_size_gb > 10 else 0.3
+        max_ctx = int((headroom * 1024) / mb_per_token)
+
+        # Clamp to power-of-2-ish sensible values
+        # Prefer smaller ctx to leave more headroom and avoid swap thrashing
+        for ctx in [16384, 8192, 4096, 2048]:
+            if ctx <= max_ctx:
+                return ctx
+        return 2048
 
     def load(self, model_info: ModelInfo, device: str) -> None:
         console.print(f"  [dim]Server:[/] {self.base_url}")
@@ -476,7 +522,7 @@ class OllamaBackend(Backend):
         with urllib.request.urlopen(f"{self.base_url}/api/tags") as resp:
             data = json.loads(resp.read())
 
-        available = [m["name"] for m in data.get("models", [])]
+        available = {m["name"]: m for m in data.get("models", [])}
         if model_info.name not in available:
             raise ValueError(
                 f"Model '{model_info.name}' not found on Ollama server. "
@@ -484,7 +530,55 @@ class OllamaBackend(Backend):
             )
 
         self._model_name = model_info.name
+        model_data = available[model_info.name]
+        self._model_size_gb = model_data.get("size", 0) / (1024 ** 3)
+
+        # Auto-tune context window based on available memory
+        self._num_ctx = self._auto_tune_context(self._model_size_gb)
+        total_ram = self._get_system_memory_gb()
+
         console.print(f"  [dim]Model:[/] {self._model_name}")
+        if self._model_size_gb > 0:
+            console.print(f"  [dim]Model size:[/] {self._model_size_gb:.1f} GB")
+        if total_ram > 0:
+            console.print(f"  [dim]System RAM:[/] {total_ram:.0f} GB")
+        console.print(f"  [dim]Context window:[/] {self._num_ctx} tokens (auto-tuned)")
+
+        # Hint: for best performance, start Ollama with these env vars:
+        #   OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve
+        # This enables flash attention and quantized KV cache (50% less memory).
+        import os
+        if not os.environ.get("OLLAMA_FLASH_ATTENTION"):
+            console.print(
+                "  [yellow]\u26a0[/] Tip: restart Ollama with "
+                "[bold]OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0[/] "
+                "for faster inference"
+            )
+
+        # Pre-load the model into memory so first response is fast.
+        # keep_alive=-1 means "keep loaded indefinitely" (no idle unload).
+        console.print("  [cyan]\u27f3[/] Pre-loading model into memory...")
+        t0 = time.time()
+        try:
+            preload_body = json.dumps({
+                "model": self._model_name,
+                "keep_alive": -1,
+                "options": {
+                    "num_ctx": self._num_ctx,
+                    "num_gpu": 999,  # offload all layers to Metal GPU
+                },
+            }).encode()
+            preload_req = urllib.request.Request(
+                f"{self.base_url}/api/generate",
+                data=preload_body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(preload_req, timeout=300) as preload_resp:
+                preload_resp.read()  # consume response
+            console.print(f"  [green]\u2714[/] Model loaded [dim]({time.time() - t0:.1f}s)[/]")
+        except Exception as e:
+            console.print(f"  [yellow]\u26a0[/] Pre-load failed ({e}), first response may be slow")
+
         console.print("  [bold green]\u2714 Ready![/]")
 
     def generate_stream(
@@ -500,9 +594,12 @@ class OllamaBackend(Backend):
             "model": self._model_name,
             "messages": messages,
             "stream": True,
+            "keep_alive": -1,  # don't unload between turns
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+                "num_gpu": 999,  # offload all layers to Metal GPU
             },
         }).encode()
 
@@ -518,12 +615,34 @@ class OllamaBackend(Backend):
                     continue
                 chunk = json.loads(line)
                 if chunk.get("done"):
+                    # Extract and display performance stats
+                    eval_count = chunk.get("eval_count", 0)
+                    eval_duration = chunk.get("eval_duration", 0)
+                    if eval_count > 0 and eval_duration > 0:
+                        tps = eval_count / (eval_duration / 1e9)
+                        self._last_tps = tps
                     break
                 content = chunk.get("message", {}).get("content", "")
                 if content:
                     yield content
 
     def unload(self) -> None:
+        # Tell Ollama to unload the model from memory
+        if self._model_name is not None:
+            try:
+                body = json.dumps({
+                    "model": self._model_name,
+                    "keep_alive": 0,
+                }).encode()
+                req = urllib.request.Request(
+                    f"{self.base_url}/api/generate",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    resp.read()
+            except Exception:
+                pass
         self._model_name = None
 
 

@@ -302,6 +302,13 @@ class ChatSession:
             tool_calls.extend(parser.flush())
 
         response_text = strip_thinking("".join(full_response)).strip()
+
+        # Show tok/s stats if the backend tracked them (Ollama)
+        tps = getattr(self.backend, "_last_tps", 0)
+        if tps > 0:
+            console.print(f"[dim]{tps:.1f} tok/s[/]")
+            self.backend._last_tps = 0  # reset for next turn
+
         return response_text, tool_calls
 
     def clear(self) -> None:
