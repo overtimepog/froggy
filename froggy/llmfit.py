@@ -294,13 +294,13 @@ def get_memory_budget() -> int | None:
         info = llmfit_system_info(binary)
         if info is not None:
             if info.get("unified_memory"):
-                gb = info.get("total_ram_gb", 0)
-            elif info.get("gpu_vram_gb", 0) > 0:
+                gb = info.get("total_ram_gb") or 0
+            elif (info.get("gpu_vram_gb") or 0) > 0:
                 gb = info["gpu_vram_gb"]
             else:
-                gb = info.get("total_ram_gb", 0)
+                gb = info.get("total_ram_gb") or 0
 
-            if gb > 0:
+            if gb and gb > 0:
                 return int(gb * 1024 * 1024 * 1024)
 
     # Fallback: heuristic from system memory
