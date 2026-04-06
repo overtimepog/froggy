@@ -1,6 +1,6 @@
 [project]
 name = "froggy"
-version = "0.1.0"
+version = "0.1.1"
 description = "Chat with your local models — Transformers, llama.cpp, MLX, vMLX (JANG), and Ollama"
 readme = "README.md"
 license = {text = "MIT"}
