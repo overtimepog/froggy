@@ -2,9 +2,11 @@
 
 import json
 import shutil
+import socket
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -387,6 +389,16 @@ def _mlx_available() -> bool:
         return False
 
 
+def _find_vmlx_cli() -> str | None:
+    """Search for the vmlx CLI executable on the system PATH."""
+    return shutil.which("vmlx")
+
+
+def _vmlx_available() -> bool:
+    """Check if the vmlx CLI is installed and reachable."""
+    return _find_vmlx_cli() is not None
+
+
 class MLXBackend(Backend):
     """Runs models via Apple MLX on Apple Silicon Macs."""
 
@@ -456,6 +468,166 @@ class MLXBackend(Backend):
                 mx.metal.reset_peak_memory()
             except (ImportError, AttributeError):
                 pass
+
+
+class VMLXBackend(Backend):
+    """Runs JANG/unsupported-MLX models via a local vMLX OpenAI-compatible server."""
+
+    def __init__(self):
+        self._process: subprocess.Popen | None = None
+        self._port: int | None = None
+        self._base_url: str | None = None
+        self._model_name: str | None = None
+        self._log_file = None
+
+    @property
+    def name(self) -> str:
+        return "vmlx"
+
+    def _find_free_port(self) -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+            return int(sock.getsockname()[1])
+
+    def _parser_args_for_model(self, model_info: ModelInfo) -> list[str]:
+        model_hints = " ".join(
+            [model_info.model_type, model_info.name, *model_info.architectures]
+        ).lower()
+
+        if "gemma4" in model_hints or "gemma-4" in model_hints:
+            return ["--tool-call-parser", "gemma4", "--reasoning-parser", "gemma4"]
+        if "qwen3" in model_hints or "qwen-3" in model_hints:
+            return ["--tool-call-parser", "qwen3", "--reasoning-parser", "qwen3"]
+        if "deepseek" in model_hints:
+            return ["--tool-call-parser", "deepseek", "--reasoning-parser", "deepseek_r1"]
+        if "llama4" in model_hints or "llama-4" in model_hints:
+            return ["--tool-call-parser", "llama4"]
+        if "llama3" in model_hints or "llama-3" in model_hints:
+            return ["--tool-call-parser", "llama3"]
+        return []
+
+    def _wait_until_ready(self, timeout: float = 60.0) -> None:
+        assert self._base_url is not None
+        deadline = time.time() + timeout
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"{self._base_url}/models", timeout=2) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                if data.get("data"):
+                    return
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+                last_error = exc
+                time.sleep(0.5)
+
+            if self._process is not None and self._process.poll() is not None:
+                raise RuntimeError("vMLX server exited before it became ready")
+
+        raise RuntimeError(f"Timed out waiting for vMLX server to start: {last_error}")
+
+    def load(self, model_info: ModelInfo, device: str) -> None:
+        if not _is_apple_silicon():
+            raise RuntimeError("vMLX backend requires Apple Silicon")
+
+        vmlx = _find_vmlx_cli()
+        if vmlx is None:
+            raise FileNotFoundError(
+                "Could not find vmlx on PATH. Install it with: pip install vmlx"
+            )
+
+        self.unload()
+
+        port = self._find_free_port()
+        self._port = port
+        self._base_url = f"http://127.0.0.1:{port}/v1"
+        self._model_name = model_info.name
+        self._log_file = open(Path("/tmp") / f"froggy-vmlx-{port}.log", "w", encoding="utf-8")
+
+        cmd = [
+            vmlx,
+            "serve",
+            str(model_info.path),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--served-model-name",
+            model_info.name,
+            *self._parser_args_for_model(model_info),
+        ]
+
+        console.print(f"  [cyan]\u27f3[/] Starting vMLX server for [bold]{model_info.name}[/]")
+        console.print(f"  [dim]Executable:[/] {vmlx}")
+        console.print(f"  [dim]Endpoint:[/] {self._base_url}")
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            self._wait_until_ready()
+        except Exception:
+            self.unload()
+            raise
+
+        console.print("  [bold green]\u2714 Ready![/]")
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        temperature: float,
+        max_tokens: int,
+    ) -> Iterator[str]:
+        if self._base_url is None or self._model_name is None:
+            raise RuntimeError("Backend not loaded — call load() first")
+
+        body = json.dumps(
+            {
+                "model": self._model_name,
+                "messages": messages,
+                "stream": True,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"{self._base_url}/chat/completions",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+        with urllib.request.urlopen(req) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content")
+                if content:
+                    yield content
+
+    def unload(self) -> None:
+        if self._process is not None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=5)
+            self._process = None
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
+        self._port = None
+        self._base_url = None
+        self._model_name = None
 
 
 class OllamaBackend(Backend):
@@ -651,6 +823,7 @@ BACKENDS: dict[str, type[Backend]] = {
     "llama.cpp": LlamaCppBackend,
     "ollama": OllamaBackend,
     "mlx": MLXBackend,
+    "vmlx": VMLXBackend,
 }
 
 
@@ -660,6 +833,8 @@ def pick_backend(model_info: ModelInfo) -> Backend:
         return OllamaBackend()
     if model_info.has_gguf:
         return LlamaCppBackend()
+    if model_info.has_jang:
+        return VMLXBackend()
     if _is_apple_silicon() and _mlx_available():
         return MLXBackend()
     return TransformersBackend()

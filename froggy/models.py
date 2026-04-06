@@ -144,6 +144,7 @@ def model_info(name: str, models_path: Path) -> dict:
     model_dir = _resolve_model_dir(name, models_path)
 
     has_gguf = any(model_dir.glob("*.gguf"))
+    has_jang = (model_dir / "jang_config.json").exists()
     has_lora = (model_dir / "adapter_model.safetensors").exists() or (
         model_dir / "adapter_model.bin"
     ).exists()
@@ -171,6 +172,7 @@ def model_info(name: str, models_path: Path) -> dict:
         "architectures": architectures,
         "file_count": len(all_files),
         "has_gguf": has_gguf,
+        "has_jang": has_jang,
         "has_lora": has_lora,
         "modified": model_dir.stat().st_mtime,
     }

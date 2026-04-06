@@ -198,10 +198,18 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
     """Start an interactive chat session with a local model."""
 
     if models_dir is None:
-        # Default: look in ../AI relative to the froggy package
-        models_dir = Path(__file__).resolve().parent.parent.parent / "AI"
-        if not models_dir.is_dir():
-            models_dir = Path.cwd()
+        # Default: use the managed ~/.froggy/models/ directory
+        from .paths import models_dir as _models_dir
+        managed = _models_dir()
+        if managed.is_dir() and any(managed.iterdir()):
+            models_dir = managed
+        else:
+            # Fallback: look in ../AI relative to the froggy package (dev layout)
+            dev_dir = Path(__file__).resolve().parent.parent.parent / "AI"
+            if dev_dir.is_dir():
+                models_dir = dev_dir
+            else:
+                models_dir = managed  # point at ~/.froggy/models even if empty (for error msg)
 
     # Resolve tools directory
     if tools_dir is None:
@@ -370,6 +378,7 @@ def info(name):
         f"[bold]Architectures:[/] {', '.join(meta['architectures']) or 'N/A'}",
         f"[bold]Files:[/]         {meta['file_count']}",
         f"[bold]Has GGUF:[/]      {'Yes' if meta['has_gguf'] else 'No'}",
+        f"[bold]Has JANG:[/]      {'Yes' if meta.get('has_jang') else 'No'}",
         f"[bold]Has LoRA:[/]      {'Yes' if meta['has_lora'] else 'No'}",
         f"[bold]Modified:[/]      {modified}",
     ]

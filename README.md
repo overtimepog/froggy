@@ -1,6 +1,6 @@
 # froggy
 
-A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters), GGUF models via llama.cpp, Apple MLX on Apple Silicon, and Ollama.
+A terminal-based chat tool for running local AI models. Supports HuggingFace Transformers (with LoRA adapters), GGUF models via llama.cpp, Apple MLX on Apple Silicon, JANG models via vMLX, and Ollama.
 
 ## Features
 
@@ -12,6 +12,7 @@ A terminal-based chat tool for running local AI models. Supports HuggingFace Tra
 - **Streaming chat** - Real-time token streaming with rich markdown rendering, automatic thinking-block filtering, and end-of-turn detection
 - **LoRA support** - Automatically detects and applies LoRA adapters, downloading base models as needed
 - **Apple MLX** - Native acceleration on Apple Silicon Macs via mlx-lm, auto-detected when available
+- **vMLX for JANG models** - Auto-routes JANG/unsupported MLX checkpoints (like Gemma 4 JANG) through a local vMLX OpenAI-compatible server
 - **GPU acceleration** - Auto-detects CUDA and selects optimal dtype (bfloat16/float32)
 - **In-session controls** - Switch models, adjust temperature, set system prompts, and more without restarting
 - **Tool use** - LLM-driven function calling (read/write files, run shell commands, web search) with a 3-tier safety model and custom plugin support
@@ -43,7 +44,7 @@ pip install .
 # Install with GPU/Transformers support
 pip install ".[gpu]"
 
-# Install with Apple MLX support (Apple Silicon only)
+# Install with Apple MLX + vMLX support (Apple Silicon only)
 pip install ".[mlx]"
 
 # Install with tool-use support (includes duckduckgo_search)
@@ -83,6 +84,8 @@ froggy config
 
 On launch, `froggy chat` scans for models and presents a selection menu. Pick a model and start chatting.
 
+JANG checkpoints with `jang_config.json` are labeled `JANG/vMLX` in the picker and are launched through a local `vmlx serve` subprocess automatically. For families that need parser hints (for example Gemma 4), froggy also adds the matching `--tool-call-parser` / `--reasoning-parser` flags for vMLX automatically.
+
 ## Commands
 
 ### `froggy chat`
@@ -112,7 +115,12 @@ froggy download TheBloke/Mistral-7B --format gguf
 
 # Interactively pick from available variants
 froggy download TheBloke/Mistral-7B --pick
+
+# Download a JANG model that needs vMLX at runtime
+froggy download https://huggingface.co/dealignai/Gemma-4-31B-JANG_4M-CRACK --format safetensors
 ```
+
+For large safetensors/JANG downloads, froggy disables Hugging Face XET during the snapshot step to avoid the common macOS hang on huge files.
 
 | Option | Description |
 |--------|-------------|

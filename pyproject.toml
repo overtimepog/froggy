@@ -1,14 +1,37 @@
 [project]
 name = "froggy"
-version = "0.0.1"
-description = "Chat with your local models"
+version = "0.1.0"
+description = "Chat with your local models — Transformers, llama.cpp, MLX, vMLX (JANG), and Ollama"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.11"
+authors = [
+    {name = "Truen Pechter", email = "truen2005@gmail.com"},
+]
+keywords = ["llm", "chat", "local", "mlx", "vmlx", "jang", "ollama", "llama-cpp", "apple-silicon", "transformers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "click>=8.0",
     "rich>=13.0",
     "huggingface-hub>=0.25.0",
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/overtimepog/froggy"
+Repository = "https://github.com/overtimepog/froggy"
+Issues = "https://github.com/overtimepog/froggy/issues"
 
 [project.optional-dependencies]
 gpu = [
@@ -21,6 +44,7 @@ gpu = [
 mlx = [
     "mlx>=0.16.0",
     "mlx-lm>=0.16.0",
+    "vmlx>=1.3.26",
 ]
 tools = [
     "duckduckgo_search>=6.0",

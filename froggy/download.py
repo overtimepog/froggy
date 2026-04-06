@@ -360,7 +360,7 @@ def download_model(
             try:
                 snapshot_download(
                     mlx_repo,
-                    allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
+                    allow_patterns=["*.safetensors", "*.json", "*.jinja", "tokenizer*"],
                     local_dir=str(mlx_dest),
                     token=None,
                 )
@@ -408,12 +408,20 @@ def download_model(
             f"[cyan]Downloading safetensors[/] from {parsed.repo_id}…"
         )
         try:
-            snapshot_download(
-                parsed.repo_id,
-                allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
-                local_dir=str(dest),
-                token=None,
-            )
+            previous_disable_xet = os.environ.get("HF_HUB_DISABLE_XET")
+            os.environ["HF_HUB_DISABLE_XET"] = "1"
+            try:
+                snapshot_download(
+                    parsed.repo_id,
+                    allow_patterns=["*.safetensors", "*.json", "*.jinja", "tokenizer*"],
+                    local_dir=str(dest),
+                    token=None,
+                )
+            finally:
+                if previous_disable_xet is None:
+                    os.environ.pop("HF_HUB_DISABLE_XET", None)
+                else:
+                    os.environ["HF_HUB_DISABLE_XET"] = previous_disable_xet
             _console.print(f"[green]✓[/] Safetensors saved to {dest}")
             return dest
         except Exception as exc:

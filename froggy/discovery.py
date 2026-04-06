@@ -16,6 +16,7 @@ class ModelInfo:
     has_lora: bool = False
     lora_base_model: str | None = None
     has_gguf: bool = False
+    has_jang: bool = False
     is_ollama: bool = False
 
     @property
@@ -25,8 +26,13 @@ class ModelInfo:
         if self.has_lora and self.lora_base_model:
             base_short = self.lora_base_model.split("/")[-1]
             return f"{base_short} + [bold magenta]{self.name}[/] [magenta]\\[LoRA][/]"
-        tag = " [bold green]\\[GGUF][/]" if self.has_gguf else ""
-        return f"{self.name}{tag}"
+        tags: list[str] = []
+        if self.has_gguf:
+            tags.append("[bold green]\\[GGUF][/]")
+        if self.has_jang:
+            tags.append("[bold yellow]\\[JANG/vMLX][/]")
+        suffix = f" {' '.join(tags)}" if tags else ""
+        return f"{self.name}{suffix}"
 
 
 def discover_models(search_dir: Path) -> list[ModelInfo]:
@@ -87,6 +93,7 @@ def _try_add_model(path: Path, models: list[ModelInfo]):
                 pass
 
     info.has_gguf = any(path.glob("*.gguf"))
+    info.has_jang = (path / "jang_config.json").exists()
     models.append(info)
 
 
