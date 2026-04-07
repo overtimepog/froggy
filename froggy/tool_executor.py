@@ -356,6 +356,7 @@ class ToolExecutor:
         confirm_fn: Callable[[str, RiskLevel], bool] | None = None,
         shell_timeout: int = 30,
         python_timeout: int = 10,
+        mcp_manager: Any | None = None,
     ):
         self.project_root = Path(project_root or os.getcwd()).resolve()
         self.token_budget = token_budget
@@ -363,6 +364,7 @@ class ToolExecutor:
         self.shell_timeout = shell_timeout
         self.python_timeout = python_timeout
         self._confirm_fn = confirm_fn or self._default_confirm
+        self._mcp_manager = mcp_manager
 
         self._tools: dict[str, Any] = {
             "read_file": self._read_file,
@@ -379,6 +381,10 @@ class ToolExecutor:
 
     def execute(self, tool_name: str, **kwargs) -> dict[str, Any]:
         """Dispatch a tool by name. Returns a structured result dict."""
+        # Check MCP tools first
+        if self._mcp_manager is not None and self._mcp_manager.is_mcp_tool(tool_name):
+            return self._execute_mcp(tool_name, kwargs)
+
         fn = self._tools.get(tool_name)
         if fn is None:
             return format_result(tool_name, f"Unknown tool: '{tool_name}'", error=True)
@@ -386,6 +392,20 @@ class ToolExecutor:
             return fn(**kwargs)
         except Exception as exc:
             return format_result(tool_name, f"Unexpected error: {exc}", error=True)
+
+    def _execute_mcp(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute an MCP tool via the MCP manager."""
+        # MCP tools require user confirmation
+        allowed, reason = self._gate(
+            SafetyTier.CONFIRM, RiskLevel.MEDIUM, f"MCP tool: {tool_name}"
+        )
+        if not allowed:
+            return format_result(tool_name, reason, error=True)
+        try:
+            result = self._mcp_manager.call_tool(tool_name, arguments)
+            return format_result(tool_name, result, token_budget=self.token_budget)
+        except Exception as exc:
+            return format_result(tool_name, f"MCP error: {exc}", error=True)
 
     # Alias used by session integration (spec §9)
     def run(self, tool_call: Any) -> str:

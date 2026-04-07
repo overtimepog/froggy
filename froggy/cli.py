@@ -64,10 +64,10 @@ def select_model(models: list[ModelInfo]) -> ModelInfo | None:
 def _build_tool_system(tools_dir: Path | None):
     """Instantiate ToolRegistry and ToolExecutor if the tool modules are available.
 
-    Returns ``(registry, executor)`` or ``(None, None)`` when unavailable.
+    Returns ``(registry, executor, mcp_manager)`` or ``(None, None, None)`` when unavailable.
     """
     if not _TOOLS_AVAILABLE:
-        return None, None
+        return None, None, None
 
     try:
         from .tool_executor import ToolExecutor
@@ -83,12 +83,31 @@ def _build_tool_system(tools_dir: Path | None):
                 console.print(f"[dim]Loaded {len(custom)} custom tool(s) from {tools_dir}[/]")
             all_tools.extend(custom)
 
+        # Connect to MCP servers
+        mcp_manager = None
+        try:
+            from .mcp_client import MCPManager
+            mcp_mgr = MCPManager()
+            mcp_tools = mcp_mgr.connect_all()
+            if mcp_tools:
+                all_tools.extend(mcp_tools)
+                server_names = mcp_mgr.server_names
+                console.print(
+                    f"[dim]MCP: {len(mcp_tools)} tool(s) from "
+                    f"{len(server_names)} server(s) ({', '.join(server_names)})[/]"
+                )
+                mcp_manager = mcp_mgr
+        except ImportError:
+            pass  # mcp package not installed
+        except Exception as exc:
+            console.print(f"[dim]MCP unavailable: {exc}[/]")
+
         registry = ToolRegistry(tools=all_tools)
-        executor = ToolExecutor()
-        return registry, executor
+        executor = ToolExecutor(mcp_manager=mcp_manager)
+        return registry, executor, mcp_manager
     except Exception as exc:
         console.print(f"[dim]Tool system unavailable: {exc}[/]")
-        return None, None
+        return None, None, None
 
 
 @click.group(invoke_without_command=True)
@@ -234,7 +253,7 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
         sys.exit(1)
 
     # Build tool system once (shared across model switches within a session)
-    tool_registry, tool_executor = _build_tool_system(tools_dir)
+    tool_registry, tool_executor, mcp_manager = _build_tool_system(tools_dir)
 
     while True:
         selected_model = select_model(models)
@@ -289,6 +308,10 @@ def chat(ctx, models_dir: Path | None, device: str, tools_dir: Path | None):
         except KeyboardInterrupt:
             backend.unload()
             break
+
+    # Clean up MCP connections
+    if mcp_manager is not None:
+        mcp_manager.disconnect_all()
 
     console.print("[dim]Goodbye! \U0001f438[/]")
 
@@ -468,3 +491,60 @@ def config_set(key, value):
     """Set a config value."""
     set_config(key, value)
     click.echo(f"Set {key} = {value}")
+
+
+# ---------------------------------------------------------------------------
+# MCP command group
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+def mcp():
+    """List MCP servers and their tools."""
+    try:
+        from .mcp_client import MCPManager, load_mcp_config, mcp_config_path
+    except ImportError:
+        console.print("[red]MCP support requires the 'mcp' package:[/] pip install mcp")
+        return
+
+    configs = load_mcp_config()
+    if not configs:
+        console.print(f"[yellow]No MCP servers configured.[/]")
+        console.print(f"[dim]Create {mcp_config_path()} with:[/]")
+        console.print()
+        console.print("[dim]servers:[/]")
+        console.print("[dim]  fetch:[/]")
+        console.print("[dim]    command: uvx[/]")
+        console.print("[dim]    args: [mcp-server-fetch][/]")
+        return
+
+    console.print(f"[cyan]Connecting to {len(configs)} MCP server(s)...[/]")
+    mgr = MCPManager()
+    try:
+        tools = mgr.connect_all()
+    except Exception as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        return
+
+    tbl = Table(title="MCP Servers & Tools", border_style="cyan", title_style="bold cyan")
+    tbl.add_column("Server", style="bold")
+    tbl.add_column("Tool", style="green")
+    tbl.add_column("Description", style="dim")
+
+    for server_name in mgr.server_names:
+        first = True
+        for tool_name in mgr.server_tools(server_name):
+            # Find the ToolDef
+            td = next((t for t in tools if t.name == tool_name), None)
+            desc = td.description if td else ""
+            tbl.add_row(
+                server_name if first else "",
+                tool_name,
+                desc,
+            )
+            first = False
+
+    console.print(tbl)
+    console.print(f"\n[dim]{len(tools)} total tool(s) available during chat[/]")
+
+    mgr.disconnect_all()

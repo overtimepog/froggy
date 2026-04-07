@@ -1,6 +1,6 @@
 [project]
 name = "froggy"
-version = "0.1.1"
+version = "0.2.0"
 description = "Chat with your local models — Transformers, llama.cpp, MLX, vMLX (JANG), and Ollama"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,6 +48,9 @@ mlx = [
 ]
 tools = [
     "duckduckgo_search>=6.0",
+]
+mcp = [
+    "mcp>=1.0.0",
 ]
 
 [project.scripts]
