@@ -1,18 +1,13 @@
 """Tests for MCP client integration."""
 
 import textwrap
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from froggy.mcp_client import (
     MCPManager,
-    MCPServerConfig,
     _mcp_tool_to_tooldef,
     load_mcp_config,
 )
-from froggy.tools import ToolDef
 
 
 class TestLoadMCPConfig:

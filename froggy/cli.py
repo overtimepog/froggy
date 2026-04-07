@@ -509,7 +509,7 @@ def mcp():
 
     configs = load_mcp_config()
     if not configs:
-        console.print(f"[yellow]No MCP servers configured.[/]")
+        console.print("[yellow]No MCP servers configured.[/]")
         console.print(f"[dim]Create {mcp_config_path()} with:[/]")
         console.print()
         console.print("[dim]servers:[/]")
